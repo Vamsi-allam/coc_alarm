@@ -127,8 +127,10 @@ h1 { margin-bottom: 0; font-size: 30px; line-height: 1.2; font-weight: 800; lett
 .account-summary-help, .account-summary-empty { margin: 9px 0 0; color: var(--muted); font-size: 11px; }
 .account-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 10px; }
 .account-summary-grid:not(:empty) { margin-top: 14px; }
-.account-summary-card { min-width: 0; padding: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border: 1px solid var(--line); border-radius: 5px; }
-.account-summary-card h3 { width: 100%; margin: 0 0 2px; overflow-wrap: anywhere; font-size: 13px; }
+.account-summary-card { min-width: 0; padding: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); background: transparent; text-align: left; }
+.account-summary-card:hover { border-color: var(--line-strong); background: var(--pine-soft); }
+.account-summary-card[aria-pressed="true"] { border-color: var(--lime); background: var(--pine-soft); }
+.account-summary-name { width: 100%; margin: 0 0 2px; overflow-wrap: anywhere; font-size: 13px; font-weight: 800; }
 .account-summary-card .village-chip { font-variant-numeric: tabular-nums; }
 .section-title { display: flex; align-items: center; gap: 9px; }
 .section-index { color: #7d9989; font-family: "DM Mono", monospace; font-size: 10px; }

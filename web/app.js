@@ -330,7 +330,7 @@ function filteredBuilders() {
   const account = elements.accountFilter.value;
   return builders
     .map((row, index) => ({ row, index }))
-    .filter(({ row }) => (!village || row.village === village) && (!account || row.account === account))
+    .filter(({ row }) => (!village || row.village === village) && (!account || normalize(row.account) === normalize(account)))
     .sort((left, right) => {
       const accountOrder = left.row.account.localeCompare(right.row.account, undefined, { sensitivity: "base" });
       if (accountOrder) return accountOrder;
@@ -367,6 +367,7 @@ function renderAccountSummary() {
     if (!accounts.has(key)) {
       accounts.set(key, {
         name: row.account.trim(),
+        value: row.account,
         home: { active: 0, total: 0 },
         night: { active: 0, total: 0 },
       });
@@ -377,14 +378,19 @@ function renderAccountSummary() {
     if (!finishIsDone(row, now)) village.active += 1;
   }
 
-  elements.accountSummary.replaceChildren();
+  const cards = document.createDocumentFragment();
   elements.accountSummaryEmpty.hidden = accounts.size > 0;
   const sortedAccounts = [...accounts.values()]
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
   for (const account of sortedAccounts) {
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "account-summary-card";
-    const name = document.createElement("h3");
+    card.dataset.account = account.value;
+    card.setAttribute("aria-pressed", String(normalize(elements.accountFilter.value) === normalize(account.value)));
+    card.title = `Show all builders for ${account.name}`;
+    const name = document.createElement("span");
+    name.className = "account-summary-name";
     name.textContent = account.name;
     card.append(name);
     for (const [label, counts, className] of [
@@ -397,7 +403,18 @@ function renderAccountSummary() {
       village.setAttribute("aria-label", `${label} Village: ${counts.active} in progress out of ${counts.total} builders`);
       card.append(village);
     }
-    elements.accountSummary.append(card);
+    cards.append(card);
+  }
+  const nextCards = [...cards.children];
+  const currentCards = [...elements.accountSummary.children];
+  if (nextCards.length !== currentCards.length || nextCards.some((card, index) => !card.isEqualNode(currentCards[index]))) {
+    const focusedAccount = elements.accountSummary.contains(document.activeElement)
+      ? document.activeElement.dataset.account
+      : null;
+    elements.accountSummary.replaceChildren(cards);
+    if (focusedAccount !== null) {
+      nextCards.find((card) => card.dataset.account === focusedAccount)?.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -775,6 +792,13 @@ elements.accountFilter.addEventListener("change", () => {
   selectedId = null;
   setEditorStatus("");
   render();
+});
+elements.accountSummary.addEventListener("click", (event) => {
+  const card = event.target.closest(".account-summary-card");
+  if (!card) return;
+  elements.accountFilter.value = card.dataset.account;
+  elements.villageFilter.value = "";
+  elements.accountFilter.dispatchEvent(new Event("change"));
 });
 elements.showAllButton.addEventListener("click", () => {
   elements.villageFilter.value = "";
