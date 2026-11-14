@@ -1,0 +1,5 @@
+[functions.discord-builder-alerts]
+verify_jwt = false
+
+[functions.discord-webhook-settings]
+verify_jwt = false

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#183d34">
+    <title>Builder Desk</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Builder Desk home">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span class="brand-name">BUILDER<span>DESK</span></span>
+      </a>
+      <div class="topbar-actions">
+        <button class="button button-quiet" id="webhookSettingsButton" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.7 1.7M14 10.5a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 19.2l1.7-1.7"/></svg>
+          Webhooks
+        </button>
+        <button class="button button-quiet" id="importButton" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>
+          Import CSV
+        </button>
+        <button class="button button-outline" id="exportButton" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+          Export CSV
+        </button>
+        <input id="csvFile" type="file" accept=".csv,text/csv" hidden>
+      </div>
+    </header>
+
+    <main class="page-shell">
+      <section class="page-heading" aria-labelledby="pageTitle">
+        <div>
+          <p class="eyebrow"><span class="eyebrow-dot"></span> VILLAGE OPERATIONS</p>
+          <h1 id="pageTitle">Builder schedule</h1>
+        </div>
+        <p class="today-label" id="todayLabel"></p>
+      </section>
+
+      <section class="overview" aria-label="Builder overview">
+        <div class="overview-item">
+          <span class="overview-label">IN PROGRESS</span>
+          <strong id="activeCount">0</strong>
+          <span class="overview-unit">builders</span>
+        </div>
+        <div class="overview-item overview-ready">
+          <span class="overview-label">READY</span>
+          <strong id="readyCount">0</strong>
+          <span class="overview-unit">builders</span>
+        </div>
+        <div class="overview-item overview-accounts">
+          <span class="overview-label">ACCOUNTS</span>
+          <strong id="accountCount">0</strong>
+          <span class="overview-unit">tracked</span>
+        </div>
+        <div class="overview-date">
+          <span class="live-indicator"></span>
+          <span>LIVE COUNTDOWN</span>
+        </div>
+      </section>
+
+      <section class="add-section" aria-labelledby="addHeading">
+        <div class="section-title">
+          <span class="section-index">01</span>
+          <h2 id="addHeading">Add builders</h2>
+        </div>
+        <form id="addForm" class="add-form" novalidate>
+          <label class="field account-field">
+            <span>Account name</span>
+            <input id="accountInput" name="account" type="text" placeholder="e.g. Vamsi" autocomplete="off" required>
+          </label>
+          <fieldset class="field village-field">
+            <legend>Village</legend>
+            <div class="segmented-control">
+              <label class="segment segment-home">
+                <input type="radio" name="village" value="Home Village" checked>
+                <span>Home</span>
+              </label>
+              <label class="segment segment-night">
+                <input type="radio" name="village" value="Night Village">
+                <span>Night</span>
+              </label>
+            </div>
+          </fieldset>
+          <label class="field count-field">
+            <span>Builder count</span>
+            <input id="builderCountInput" name="builderCount" type="number" min="1" max="20" step="1" placeholder="6" required>
+          </label>
+          <button class="button button-primary add-button" type="submit">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            Add builders
+          </button>
+        </form>
+        <p class="inline-status" id="addStatus" aria-live="polite"></p>
+      </section>
+
+      <section class="list-section" aria-labelledby="listHeading">
+        <div class="list-heading">
+          <div class="section-title">
+            <span class="section-index">02</span>
+            <h2 id="listHeading">Builder list</h2>
+            <span class="result-count" id="resultCount">0</span>
+          </div>
+          <div class="filters">
+            <label class="filter-field">
+              <span>VILLAGE</span>
+              <select id="villageFilter" aria-label="Filter by village">
+                <option value="">All villages</option>
+                <option value="Home Village">Home Village</option>
+                <option value="Night Village">Night Village</option>
+              </select>
+            </label>
+            <label class="filter-field">
+              <span>ACCOUNT</span>
+              <select id="accountFilter" aria-label="Filter by account">
+                <option value="">All accounts</option>
+              </select>
+            </label>
+            <button class="show-all-button" id="showAllButton" type="button">Show all</button>
+          </div>
+        </div>
+
+        <div class="work-area">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Builder</th>
+                  <th scope="col">Village</th>
+                  <th scope="col">Account</th>
+                  <th scope="col">Time left</th>
+                  <th scope="col">Finishes at</th>
+                  <th scope="col"><span class="sr-only">Select</span></th>
+                </tr>
+              </thead>
+              <tbody id="builderRows"></tbody>
+            </table>
+            <div class="empty-state" id="emptyState">
+              <span class="empty-mark" aria-hidden="true">+</span>
+              <p>No builders to show</p>
+            </div>
+          </div>
+
+          <aside class="editor-panel" aria-labelledby="editorHeading">
+            <div class="editor-topline">
+              <span class="section-index">03</span>
+              <span class="editor-label">SELECTED BUILDER</span>
+            </div>
+            <div id="editorEmpty" class="editor-empty">
+              <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M8 5h11l6 6v16H8zM19 5v7h6M12 17h9M12 21h7"/></svg>
+              <p>Select a builder<br>to manage its timer</p>
+            </div>
+            <div id="editorContent" class="editor-content" hidden>
+              <span class="village-chip" id="editorVillage"></span>
+              <h3 id="editorName"></h3>
+              <p class="editor-account" id="editorAccount"></p>
+              <div class="editor-countdown">
+                <span>TIME LEFT</span>
+                <strong id="editorTimeLeft">Done</strong>
+              </div>
+              <label class="field duration-field">
+                <span>New time remaining</span>
+                <input id="durationInput" type="text" placeholder="2d 5h 30m" autocomplete="off">
+              </label>
+              <button class="button button-primary editor-save" id="saveTimeButton" type="button">Set timer</button>
+              <button class="text-action" id="markDoneButton" type="button">Mark as done</button>
+              <div class="editor-divider"></div>
+              <button class="remove-button" id="removeButton" type="button">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"/></svg>
+                Remove builder
+              </button>
+              <p class="editor-status" id="editorStatus" aria-live="polite"></p>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <footer class="page-footer">
+        <span>BUILDER DESK</span>
+        <span id="storageLabel">LOCAL MODE</span>
+      </footer>
+    </main>
+
+    <dialog class="webhook-dialog" id="webhookDialog" aria-labelledby="webhookDialogTitle">
+      <div class="webhook-dialog-heading">
+        <div>
+          <p class="eyebrow">ACCOUNT SETTINGS</p>
+          <h2 id="webhookDialogTitle">Discord destinations</h2>
+        </div>
+        <button class="dialog-close" id="closeWebhookDialog" type="button" aria-label="Close">×</button>
+      </div>
+      <p class="webhook-dialog-copy">Webhook URLs stay private. Unlock settings to add or replace an account's destination.</p>
+
+      <section id="webhookLockPanel" class="webhook-lock-panel">
+        <label class="field">
+          <span>Settings passcode</span>
+          <input id="webhookAdminPassword" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="button button-primary webhook-unlock" id="unlockWebhooksButton" type="button">Unlock settings</button>
+      </section>
+
+      <section id="webhookManager" class="webhook-manager" hidden>
+        <div class="webhook-account-row">
+          <label class="field">
+            <span>Builder account</span>
+            <select id="webhookAccountSelect">
+              <option value="">Choose a builder account</option>
+            </select>
+          </label>
+          <button class="button button-outline webhook-refresh" id="refreshWebhookAccountsButton" type="button">Refresh accounts</button>
+        </div>
+        <form id="webhookForm" novalidate>
+          <label class="field webhook-url-field">
+            <span>Discord webhook URL</span>
+            <input id="webhookUrlInput" type="url" placeholder="Select an account first" autocomplete="off" required>
+          </label>
+          <div class="webhook-actions">
+            <button class="button button-primary" id="webhookSaveButton" type="submit" disabled>Save destination</button>
+            <button class="remove-button" id="deleteWebhookButton" type="button" hidden>Remove destination</button>
+          </div>
+        </form>
+        <button class="text-action webhook-lock" id="lockWebhooksButton" type="button">Lock settings</button>
+      </section>
+      <p class="webhook-status" id="webhookStatus" aria-live="polite"></p>
+    </dialog>
+  </body>
+</html>
