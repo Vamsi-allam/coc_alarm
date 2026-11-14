@@ -29,6 +29,8 @@ const elements = {
   activeCount: document.querySelector("#activeCount"),
   readyCount: document.querySelector("#readyCount"),
   accountCount: document.querySelector("#accountCount"),
+  accountSummary: document.querySelector("#accountSummary"),
+  accountSummaryEmpty: document.querySelector("#accountSummaryEmpty"),
   todayLabel: document.querySelector("#todayLabel"),
   editorEmpty: document.querySelector("#editorEmpty"),
   editorContent: document.querySelector("#editorContent"),
@@ -357,6 +359,48 @@ function updateOverview() {
   elements.resultCount.textContent = String(filteredBuilders().length);
 }
 
+function renderAccountSummary() {
+  const accounts = new Map();
+  const now = Date.now();
+  for (const row of builders) {
+    const key = normalize(row.account);
+    if (!accounts.has(key)) {
+      accounts.set(key, {
+        name: row.account.trim(),
+        home: { active: 0, total: 0 },
+        night: { active: 0, total: 0 },
+      });
+    }
+    const account = accounts.get(key);
+    const village = row.village === NIGHT_VILLAGE ? account.night : account.home;
+    village.total += 1;
+    if (!finishIsDone(row, now)) village.active += 1;
+  }
+
+  elements.accountSummary.replaceChildren();
+  elements.accountSummaryEmpty.hidden = accounts.size > 0;
+  const sortedAccounts = [...accounts.values()]
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+  for (const account of sortedAccounts) {
+    const card = document.createElement("div");
+    card.className = "account-summary-card";
+    const name = document.createElement("h3");
+    name.textContent = account.name;
+    card.append(name);
+    for (const [label, counts, className] of [
+      ["Home", account.home, "home"],
+      ["Night", account.night, "night"],
+    ]) {
+      const village = document.createElement("span");
+      village.className = `village-chip ${className}`;
+      village.textContent = `${label}: ${counts.active}/${counts.total}`;
+      village.setAttribute("aria-label", `${label} Village: ${counts.active} in progress out of ${counts.total} builders`);
+      card.append(village);
+    }
+    elements.accountSummary.append(card);
+  }
+}
+
 function renderRows() {
   const visible = filteredBuilders();
   elements.builderRows.replaceChildren();
@@ -432,6 +476,7 @@ function renderEditor() {
 
 function render() {
   updateOverview();
+  renderAccountSummary();
   renderRows();
   renderEditor();
 }

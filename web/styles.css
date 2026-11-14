@@ -121,8 +121,15 @@ h1 { margin-bottom: 0; font-size: 30px; line-height: 1.2; font-weight: 800; lett
 .overview-date { margin-left: auto; display: flex; align-items: center; gap: 8px; color: #58846d; font-family: "DM Mono", monospace; font-size: 10px; }
 .live-indicator { width: 7px; height: 7px; border-radius: 50%; background: #51af72; box-shadow: 0 0 0 4px #e3f3e7; }
 
-.add-section, .list-section { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.add-section, .account-summary-section, .list-section { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
 .add-section { padding: 17px 20px 10px; margin-bottom: 18px; }
+.account-summary-section { padding: 17px 20px; margin-bottom: 18px; }
+.account-summary-help, .account-summary-empty { margin: 9px 0 0; color: var(--muted); font-size: 11px; }
+.account-summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 10px; }
+.account-summary-grid:not(:empty) { margin-top: 14px; }
+.account-summary-card { min-width: 0; padding: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border: 1px solid var(--line); border-radius: 5px; }
+.account-summary-card h3 { width: 100%; margin: 0 0 2px; overflow-wrap: anywhere; font-size: 13px; }
+.account-summary-card .village-chip { font-variant-numeric: tabular-nums; }
 .section-title { display: flex; align-items: center; gap: 9px; }
 .section-index { color: #7d9989; font-family: "DM Mono", monospace; font-size: 10px; }
 .section-title h2 { margin: 0; font-size: 15px; font-weight: 800; }
@@ -172,11 +179,7 @@ td { height: 53px; padding: 7px 12px; border-top: 1px solid #e8eeea; color: #344
 tbody tr { cursor: pointer; transition: background-color 120ms ease; }
 tbody tr:hover { background: #f4f8f4; }
 tbody tr.selected { box-shadow: inset 3px 0 #38805b; }
-tbody tr.row-active { animation: active-timer-blink 1.2s steps(1, end) infinite; }
-@keyframes active-timer-blink {
-  0%, 49.9% { background-color: #ff887c; }
-  50%, 100% { background-color: #ffe17c; }
-}
+tbody tr.row-active, tbody tr.row-active:hover { background: #685a31; }
 tbody tr.row-done-home { background: var(--home-done); }
 tbody tr.row-done-night { background: var(--night-done); }
 tbody tr.row-done-home:hover { background: var(--home-done); }
@@ -288,6 +291,7 @@ td:first-child { color: #1b2e24; font-family: "Cascadia Code", "Consolas", monos
   .overview-unit { font-size: 9px; }
   .overview-date { display: none; }
   .add-section { padding: 14px 13px 7px; margin-bottom: 13px; }
+  .account-summary-section { padding: 14px 13px; margin-bottom: 13px; }
   .add-form { grid-template-columns: minmax(0, 1fr) minmax(120px, 0.8fr); gap: 11px; }
   .count-field { grid-column: 1; }
   .add-button { grid-column: 2; align-self: end; width: 100%; padding-inline: 8px; font-size: 11px; }
@@ -349,11 +353,6 @@ body {
 thead { color: #acb9b0; background: #202924; }
 td { border-top-color: #303a34; color: #d2ddd5; }
 tbody tr:hover { background: #27332c; }
-tbody tr.row-active { animation: active-timer-blink 1.2s steps(1, end) infinite; }
-@keyframes active-timer-blink {
-  0%, 49.9% { background-color: #744541; }
-  50%, 100% { background-color: #685a31; }
-}
 tbody tr.row-done-home:hover { background: var(--home-done); }
 tbody tr.row-done-night:hover { background: var(--night-done); }
 td:first-child { color: #edf4ef; }
@@ -375,7 +374,3 @@ td:first-child { color: #edf4ef; }
 .webhook-dialog-copy { color: var(--muted); }
 .webhook-status { color: #a9c5b1; }
 .webhook-dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
-
-@media (prefers-reduced-motion: reduce) {
-  tbody tr.row-active { animation: none; background-color: #514728; }
-}

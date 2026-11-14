@@ -2,6 +2,10 @@
 
 HTML, CSS, and JavaScript builder timer with Supabase storage and per-account Discord completion alerts.
 
+The **Account builders** summary shows each account's Home and Night Village builders as **in progress / total** (for example, Home: 4/8 and Night: 2/4). It includes all accounts regardless of builder-list filters and updates as timers finish.
+
+In-progress builder rows have a steady amber background without blinking. Ready builders keep their green Home Village or blue Night Village backgrounds.
+
 ## Configure Supabase
 
 1. Create a Supabase project.
