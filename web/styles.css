@@ -1,19 +1,19 @@
 :root {
-  color-scheme: light;
-  --ink: #172620;
-  --muted: #718078;
-  --paper: #f2f5f1;
-  --surface: #ffffff;
-  --line: #dce5de;
-  --line-strong: #c7d4ca;
-  --pine: #183d34;
-  --pine-soft: #e8f0eb;
-  --lime: #d8f56a;
+  color-scheme: dark;
+  --ink: #e2ebe5;
+  --muted: #a0aea5;
+  --paper: #151b18;
+  --surface: #1d2521;
+  --line: #343e38;
+  --line-strong: #4a5750;
+  --pine: #112a23;
+  --pine-soft: #27382f;
+  --lime: #c9e76a;
   --coral: #e8755a;
   --sky: #bde6fa;
-  --home-done: #b6e8c1;
-  --night-done: #bce7fa;
-  --shadow: 0 16px 38px rgba(22, 48, 36, 0.06);
+  --home-done: #315d3d;
+  --night-done: #284f63;
+  --shadow: 0 16px 38px rgba(0, 0, 0, 0.2);
   font-family: "Aptos", "Segoe UI Variable", "Trebuchet MS", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -310,5 +310,72 @@ td:first-child { color: #1b2e24; font-family: "Cascadia Code", "Consolas", monos
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
-  tbody tr.row-active { animation: none; background-color: #ffe9b0; }
+}
+
+body {
+  background-image: linear-gradient(rgba(207, 225, 214, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(207, 225, 214, 0.025) 1px, transparent 1px);
+}
+.topbar { color: #e8f0eb; }
+.brand-name span { color: #a6bcb0; }
+.button-quiet { color: #d8e5dc; }
+.button-outline { border-color: rgba(215, 232, 220, 0.24); color: #e4eee7; }
+.button-outline:hover { border-color: rgba(215, 232, 220, 0.48); }
+.button-primary { color: #24311f; background: var(--lime); }
+.button-primary:hover { background: #d6ef82; }
+.overview, .add-section, .list-section { background: var(--surface); }
+.overview-ready strong { color: #86d9a1; }
+.overview-date { color: #9ac9aa; }
+.live-indicator { background: #65bd80; box-shadow: 0 0 0 4px rgba(101, 189, 128, 0.14); }
+.section-index { color: #a6b9ad; }
+.field > span, .field legend { color: #c0ccc4; }
+.field input, .filter-field select {
+  border-color: var(--line-strong);
+  color: var(--ink);
+  background: #222b26;
+}
+.field input::placeholder { color: #9aa79f; }
+.field input:focus, .filter-field select:focus { border-color: #6ea986; outline-color: rgba(100, 175, 128, 0.22); }
+.segmented-control { border-color: var(--line-strong); background: #202823; }
+.segment span { color: #b3c0b7; }
+.segment-home input:checked + span { color: #d4efdc; background: #315d3d; }
+.segment-night input:checked + span { color: #d1ebf8; background: #284f63; }
+.inline-status { color: #a9c5b1; }
+.list-heading { border-color: var(--line); }
+.result-count { color: #d0ddd4; background: #303a34; }
+.filter-field > span, .editor-label, .editor-countdown > span { color: #a4b1a8; }
+.show-all-button { color: #c2d1c7; }
+.show-all-button:hover { border-color: var(--line); background: #26312b; }
+thead { color: #acb9b0; background: #202924; }
+td { border-top-color: #303a34; color: #d2ddd5; }
+tbody tr:hover { background: #27332c; }
+tbody tr.row-active { animation: active-timer-blink 1.2s steps(1, end) infinite; }
+@keyframes active-timer-blink {
+  0%, 49.9% { background-color: #744541; }
+  50%, 100% { background-color: #685a31; }
+}
+tbody tr.row-done-home:hover { background: var(--home-done); }
+tbody tr.row-done-night:hover { background: var(--night-done); }
+td:first-child { color: #edf4ef; }
+.village-chip.home { color: #d4efdc; background: #315d3d; }
+.village-chip.night { color: #d1ebf8; background: #284f63; }
+.finish-cell { color: #b0bdb4; }
+.row-action { color: #c8d7ce; }
+.row-action:hover { border-color: rgba(215, 232, 220, 0.18); background: rgba(225, 240, 230, 0.08); }
+.empty-state { color: #a8b5ac; }
+.empty-mark { border-color: #64746a; }
+.editor-panel { border-color: var(--line); background: #202823; }
+.editor-empty { color: #aab8af; }
+.editor-empty svg { stroke: #9eafa3; }
+.text-action { color: #9bd0aa; }
+.text-action:hover { color: #c0e6ca; }
+.editor-status { color: #a9c5b1; }
+.page-footer { color: #9aa79e; }
+.dialog-close { border-color: var(--line); color: #c5d1c9; background: #27312c; }
+.webhook-dialog-copy { color: var(--muted); }
+.webhook-status { color: #a9c5b1; }
+.webhook-dialog::backdrop { background: rgba(0, 0, 0, 0.68); }
+
+@media (prefers-reduced-motion: reduce) {
+  tbody tr.row-active { animation: none; background-color: #514728; }
 }
