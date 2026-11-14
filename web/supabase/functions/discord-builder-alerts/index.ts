@@ -80,6 +80,7 @@ export default {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            content: "@everyone",
             embeds: [{
               title: "Builder Upgrade Complete",
               description: [
@@ -93,7 +94,7 @@ export default {
               timestamp: new Date().toISOString(),
               footer: { text: "Builder Desk" },
             }],
-            allowed_mentions: { parse: [] },
+            allowed_mentions: { parse: ["everyone"] },
           }),
         });
         if (!discordResponse.ok) {
