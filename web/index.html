@@ -44,12 +44,12 @@
         <div class="overview-item">
           <span class="overview-label">IN PROGRESS</span>
           <strong id="activeCount">0</strong>
-          <span class="overview-unit">builders</span>
+          <span class="overview-unit">timers</span>
         </div>
         <div class="overview-item overview-ready">
           <span class="overview-label">READY</span>
           <strong id="readyCount">0</strong>
-          <span class="overview-unit">builders</span>
+          <span class="overview-unit">timers</span>
         </div>
         <div class="overview-item overview-accounts">
           <span class="overview-label">ACCOUNTS</span>
@@ -65,13 +65,21 @@
       <section class="add-section" aria-labelledby="addHeading">
         <div class="section-title">
           <span class="section-index">01</span>
-          <h2 id="addHeading">Add builders</h2>
+          <h2 id="addHeading">Add builders or upgrades</h2>
         </div>
         <form id="addForm" class="add-form" novalidate>
-          <label class="field account-field">
-            <span>Account name</span>
-            <input id="accountInput" name="account" type="text" placeholder="e.g. Vamsi" autocomplete="off" required>
-          </label>
+          <div class="account-fields">
+            <label class="field">
+              <span>Existing account</span>
+              <select id="addAccountSelect" aria-label="Existing account">
+                <option value="">New account</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>New account name</span>
+              <input id="accountInput" name="account" type="text" placeholder="e.g. Vamsi" autocomplete="off">
+            </label>
+          </div>
           <fieldset class="field village-field">
             <legend>Village</legend>
             <div class="segmented-control">
@@ -85,13 +93,21 @@
               </label>
             </div>
           </fieldset>
+          <label class="field type-field">
+            <span>Builder type</span>
+            <select id="builderTypeSelect" name="builderType">
+              <option value="Builder">Builder</option>
+              <option value="Lab">Lab</option>
+              <option value="Pet House">Pet House</option>
+            </select>
+          </label>
           <label class="field count-field">
-            <span>Builder count</span>
+            <span>Number to add</span>
             <input id="builderCountInput" name="builderCount" type="number" min="1" max="20" step="1" placeholder="6" required>
           </label>
           <button class="button button-primary add-button" type="submit">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-            Add builders
+            Add timers
           </button>
         </form>
         <p class="inline-status" id="addStatus" aria-live="polite"></p>
@@ -100,11 +116,12 @@
       <section class="account-summary-section" aria-labelledby="accountSummaryHeading">
         <div class="section-title">
           <span class="section-index">02</span>
-          <h2 id="accountSummaryHeading">Account builders</h2>
+          <h2 id="accountSummaryHeading">Account timers</h2>
         </div>
-        <p class="account-summary-help">In progress / total builders for each village. Click an account to filter the builder list.</p>
+        <p class="account-summary-help">In progress / total timers for each village. Click an account to filter the list, or use the arrows to change its order.</p>
         <div class="account-summary-grid" id="accountSummary"></div>
-        <p class="account-summary-empty" id="accountSummaryEmpty">Add builders to see your account summary.</p>
+        <p class="account-summary-empty" id="accountSummaryEmpty">Add timers to see your account summary.</p>
+        <p class="account-order-status" id="accountOrderStatus" aria-live="polite"></p>
       </section>
 
       <section class="list-section" aria-labelledby="listHeading">
@@ -138,11 +155,11 @@
             <table>
               <thead>
                 <tr>
-                  <th scope="col">Builder</th>
+                  <th scope="col">Builder / upgrade</th>
                   <th scope="col">Village</th>
                   <th scope="col">Account</th>
                   <th scope="col">Time left</th>
-                  <th scope="col">Finishes at</th>
+                  <th scope="col">Estimated finish</th>
                   <th scope="col"><span class="sr-only">Select</span></th>
                 </tr>
               </thead>
@@ -157,7 +174,7 @@
           <aside class="editor-panel" aria-labelledby="editorHeading">
             <div class="editor-topline">
               <span class="section-index">04</span>
-              <span class="editor-label">SELECTED BUILDER</span>
+              <span class="editor-label">SELECTED TIMER</span>
             </div>
             <div id="editorEmpty" class="editor-empty">
               <svg aria-hidden="true" viewBox="0 0 32 32"><path d="M8 5h11l6 6v16H8zM19 5v7h6M12 17h9M12 21h7"/></svg>
@@ -168,6 +185,7 @@
               <h3 id="editorName"></h3>
               <p class="editor-account" id="editorAccount"></p>
               <div class="editor-countdown">
+                <span id="labAssistantSaved" class="assistant-saved" hidden><span class="assistant-saved-label">TIME SAVED:</span> <span class="assistant-saved-value" id="labAssistantSavedValue"></span></span>
                 <span>TIME LEFT</span>
                 <strong id="editorTimeLeft">Done</strong>
               </div>
@@ -177,10 +195,16 @@
               </label>
               <button class="button button-primary editor-save" id="saveTimeButton" type="button">Set timer</button>
               <button class="text-action" id="markDoneButton" type="button">Mark as done</button>
+              <section class="assistant-panel" id="labAssistantPanel" aria-labelledby="labAssistantHeading" hidden>
+                <h4 id="labAssistantHeading">Lab Assistant</h4>
+                <p class="assistant-help">Track the assignment you make in the game. The finish time is an estimate.</p>
+                <p class="assistant-state" id="labAssistantState"></p>
+                <button class="text-action" id="stopLabAssistantButton" type="button" hidden>Stop tracking assignment</button>
+              </section>
               <div class="editor-divider"></div>
               <button class="remove-button" id="removeButton" type="button">
                 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"/></svg>
-                Remove builder
+                Remove timer
               </button>
               <p class="editor-status" id="editorStatus" aria-live="polite"></p>
             </div>
@@ -192,6 +216,34 @@
         <span id="storageLabel">LOCAL MODE</span>
       </footer>
     </main>
+
+    <dialog class="webhook-dialog" id="labAssistantDialog" aria-labelledby="labAssistantDialogTitle">
+      <div class="webhook-dialog-heading">
+        <div>
+          <p class="eyebrow">HOME VILLAGE LAB</p>
+          <h2 id="labAssistantDialogTitle">Assign Lab Assistant</h2>
+        </div>
+        <button class="dialog-close" id="closeLabAssistantDialog" type="button" aria-label="Close">×</button>
+      </div>
+      <p class="webhook-dialog-copy" id="labAssistantDialogTarget"></p>
+      <p class="assistant-help">Assign the assistant in the game too. This app only tracks the estimate.</p>
+      <form id="labAssistantForm" class="assistant-form" novalidate>
+        <label class="field">
+          <span>Assistant level (1–12)</span>
+          <input id="labAssistantLevel" type="number" min="1" max="12" step="1" value="1">
+        </label>
+        <label class="field">
+          <span>Current shared workday remaining (optional)</span>
+          <input id="labAssistantWorkday" type="text" placeholder="e.g. 19h 30m 15s; blank starts a workday" autocomplete="off">
+        </label>
+        <label class="assistant-checkbox">
+          <input id="labAssistantRepeat" type="checkbox">
+          <span>Keep assigned until upgrade is complete</span>
+        </label>
+        <button class="button button-primary editor-save" id="assignLabAssistantButton" type="submit">Assign assistant</button>
+        <p class="editor-status" id="labAssistantStatus" aria-live="polite"></p>
+      </form>
+    </dialog>
 
     <dialog class="webhook-dialog" id="webhookDialog" aria-labelledby="webhookDialogTitle">
       <div class="webhook-dialog-heading">

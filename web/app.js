@@ -1,10 +1,17 @@
 import { createClient } from "@supabase/supabase-js";
+import { HOUR, WORKDAY, forecastLabAssistant, savedLabTime, remainingLabTime, labAssistantAvailability } from "./lab-assistant.js";
 
 const STORAGE_KEY = "builder-desk-records-v1";
+const ACCOUNT_ORDER_STORAGE_KEY = "builder-desk-account-order-v1";
 const HOME_VILLAGE = "Home Village";
 const NIGHT_VILLAGE = "Night Village";
+const BUILDER_TYPE = "Builder";
+const VILLAGE_BUILDER_TYPES = {
+  [HOME_VILLAGE]: [BUILDER_TYPE, "Lab", "Pet House"],
+  [NIGHT_VILLAGE]: [BUILDER_TYPE, "Lab"],
+};
 const TABLE_NAME = "builder_timers";
-const SUPABASE_COLUMNS = "id, account, village, builder_number, finish_at, discord_alert_enabled, discord_alert_sent_at, discord_alert_claimed_at";
+const SUPABASE_COLUMNS = "id, account, village, builder_type, builder_number, finish_at, discord_alert_enabled, discord_alert_sent_at, discord_alert_claimed_at";
 const config = import.meta.env ?? {};
 const supabaseUrl = (config.VITE_SUPABASE_URL?.trim() ?? "")
   .replace(/\/+$/, "")
@@ -17,7 +24,9 @@ const supabase = supabaseUrl && supabaseKey && !isExampleConfig
 
 const elements = {
   accountInput: document.querySelector("#accountInput"),
+  addAccountSelect: document.querySelector("#addAccountSelect"),
   builderCountInput: document.querySelector("#builderCountInput"),
+  builderTypeSelect: document.querySelector("#builderTypeSelect"),
   addForm: document.querySelector("#addForm"),
   addStatus: document.querySelector("#addStatus"),
   villageFilter: document.querySelector("#villageFilter"),
@@ -31,6 +40,7 @@ const elements = {
   accountCount: document.querySelector("#accountCount"),
   accountSummary: document.querySelector("#accountSummary"),
   accountSummaryEmpty: document.querySelector("#accountSummaryEmpty"),
+  accountOrderStatus: document.querySelector("#accountOrderStatus"),
   todayLabel: document.querySelector("#todayLabel"),
   editorEmpty: document.querySelector("#editorEmpty"),
   editorContent: document.querySelector("#editorContent"),
@@ -43,6 +53,20 @@ const elements = {
   markDoneButton: document.querySelector("#markDoneButton"),
   removeButton: document.querySelector("#removeButton"),
   editorStatus: document.querySelector("#editorStatus"),
+  labAssistantPanel: document.querySelector("#labAssistantPanel"),
+  labAssistantState: document.querySelector("#labAssistantState"),
+  labAssistantSaved: document.querySelector("#labAssistantSaved"),
+  labAssistantSavedValue: document.querySelector("#labAssistantSavedValue"),
+  labAssistantDialog: document.querySelector("#labAssistantDialog"),
+  labAssistantDialogTarget: document.querySelector("#labAssistantDialogTarget"),
+  closeLabAssistantDialog: document.querySelector("#closeLabAssistantDialog"),
+  labAssistantForm: document.querySelector("#labAssistantForm"),
+  labAssistantStatus: document.querySelector("#labAssistantStatus"),
+  labAssistantLevel: document.querySelector("#labAssistantLevel"),
+  labAssistantWorkday: document.querySelector("#labAssistantWorkday"),
+  labAssistantRepeat: document.querySelector("#labAssistantRepeat"),
+  assignLabAssistantButton: document.querySelector("#assignLabAssistantButton"),
+  stopLabAssistantButton: document.querySelector("#stopLabAssistantButton"),
   importButton: document.querySelector("#importButton"),
   exportButton: document.querySelector("#exportButton"),
   csvFile: document.querySelector("#csvFile"),
@@ -65,6 +89,12 @@ const elements = {
 };
 
 let builders = loadBuilders();
+let labAssistants = new Map();
+let labAssistantsReady = !supabase;
+let labAssistantSaving = false;
+let accountOrder = [];
+let accountOrderSaving = false;
+let accountOrderReady = !supabase;
 let selectedId = null;
 let remoteReady = !supabase;
 let webhookAdminPassword = "";
@@ -77,16 +107,23 @@ function makeId() {
 function loadBuilders() {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-    if (!Array.isArray(stored)) return [];
-    return stored.filter((row) => row && row.account && row.builder && Number.isFinite(Date.parse(row.finishAt)));
+    const records = Array.isArray(stored) ? stored : stored.builders;
+    if (!Array.isArray(records)) return [];
+    return records
+      .filter((row) => row && row.account && row.builder && Number.isFinite(Date.parse(row.finishAt)))
+      .map((row) => ({ ...row, builderType: row.builderType || BUILDER_TYPE }));
   } catch {
     return [];
   }
 }
 
 function saveBuilders() {
+  if (!labAssistantsReady) {
+    setAddStatus("Lab Assistant data could not be loaded; browser data was not overwritten.", true);
+    return false;
+  }
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(builders));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ builders, labAssistants: [...labAssistants.values()] }));
     return true;
   } catch {
     setAddStatus("Could not save in this browser. Check available storage space.", true);
@@ -94,11 +131,74 @@ function saveBuilders() {
   }
 }
 
+function fromSupabaseAssistant(row) {
+  const timestamp = (value) => value === null ? null : new Date(value).getTime();
+  return {
+    accountKey: row.account_key,
+    level: row.level,
+    timerId: row.timer_id,
+    startedAt: timestamp(row.started_at),
+    workdayEnd: timestamp(row.workday_end_at),
+    workUntil: timestamp(row.work_until_at),
+    nextSession: timestamp(row.next_session_at),
+    baseFinish: timestamp(row.base_finish_at),
+    projectedFinish: timestamp(row.projected_finish_at),
+    repeat: row.keep_assigned,
+    savedMs: row.saved_seconds * 1000,
+  };
+}
+
+function loadLocalAssistants() {
+  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+  if (Array.isArray(stored)) return new Map();
+  if (!stored || !Array.isArray(stored.labAssistants)) throw new Error("Saved Lab Assistant data is invalid.");
+  return new Map(stored.labAssistants.map((assistant) => [assistant.accountKey, assistant]));
+}
+
+async function loadSupabaseAssistants() {
+  const { data, error } = await supabase.from("lab_assistants").select("*");
+  if (error) throw error;
+  return new Map(data.map((row) => {
+    const assistant = fromSupabaseAssistant(row);
+    return [assistant.accountKey, assistant];
+  }));
+}
+
+function hasTrackedLabAssistant(row, now = Date.now()) {
+  const assistant = labAssistants.get(normalize(row.account));
+  return assistant?.timerId === row.id && assistant.projectedFinish > now;
+}
+
+function savedForLab(row, now) {
+  const assistant = labAssistants.get(normalize(row.account));
+  if (row.village !== HOME_VILLAGE || row.builderType !== "Lab" || assistant?.timerId !== row.id) return null;
+  const finish = assistant.projectedFinish ?? assistant.baseFinish;
+  return finish != null && new Date(row.finishAt).getTime() === Math.floor(finish)
+    ? savedLabTime(assistant, now) : null;
+}
+
+function remainingForRow(row, now) {
+  const assistant = labAssistants.get(normalize(row.account));
+  if (assistant?.projectedFinish != null && savedForLab(row, now) !== null) {
+    return remainingLabTime(assistant, now);
+  }
+  return Math.max(0, new Date(row.finishAt).getTime() - now);
+}
+
+function canAssignLabAssistant(row, now) {
+  if (!labAssistantsReady || labAssistantSaving || row.village !== HOME_VILLAGE
+      || row.builderType !== "Lab" || finishIsDone(row, now)) return false;
+  const assistant = labAssistants.get(normalize(row.account));
+  if (assistant?.timerId !== row.id && assistant?.projectedFinish > now) return false;
+  return labAssistantAvailability(assistant, now).available;
+}
+
 function fromSupabaseRow(row) {
   return {
     id: row.id,
     account: row.account,
     village: row.village,
+    builderType: row.builder_type || BUILDER_TYPE,
     builder: String(row.builder_number),
     finishAt: row.finish_at,
     discordAlertEnabled: row.discord_alert_enabled,
@@ -111,6 +211,7 @@ function toSupabaseRow(row) {
   return {
     account: row.account,
     village: row.village,
+    builder_type: row.builderType || BUILDER_TYPE,
     builder_number: Number(row.builder),
     finish_at: row.finishAt,
     discord_alert_enabled: row.discordAlertEnabled ?? !finishIsDone(row),
@@ -134,7 +235,7 @@ async function upsertSupabaseBuilders(rows) {
   if (!rows.length) return [];
   const { data, error } = await supabase
     .from(TABLE_NAME)
-    .upsert(rows.map(toSupabaseRow), { onConflict: "account,village,builder_number" })
+    .upsert(rows.map(toSupabaseRow), { onConflict: "account,village,builder_type,builder_number" })
     .select(SUPABASE_COLUMNS);
   if (error) throw error;
   return data.map(fromSupabaseRow);
@@ -172,7 +273,7 @@ async function callWebhookSettings(action, fields = {}) {
 
 function refreshWebhookAccountOptions(selectedAccount = "") {
   elements.webhookAccountSelect.replaceChildren(new Option("Choose a builder account", ""));
-  for (const { account, webhookConfigured } of webhookAccounts) {
+  for (const { account, webhookConfigured } of [...webhookAccounts].sort((left, right) => compareAccounts(left.account, right.account))) {
     const state = webhookConfigured ? "webhook saved" : "not set";
     elements.webhookAccountSelect.add(new Option(`${account} · ${state}`, account));
   }
@@ -294,12 +395,99 @@ function normalize(value) {
   return String(value ?? "").trim().toLocaleLowerCase();
 }
 
+function compareAccounts(left, right) {
+  const leftKey = normalize(left);
+  const rightKey = normalize(right);
+  if (leftKey === rightKey) return 0;
+  const leftIndex = accountOrder.indexOf(leftKey);
+  const rightIndex = accountOrder.indexOf(rightKey);
+  if (leftIndex !== -1 || rightIndex !== -1) {
+    if (leftIndex === -1) return 1;
+    if (rightIndex === -1) return -1;
+    return leftIndex - rightIndex;
+  }
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
+}
+
+function parseAccountOrder(value) {
+  if (!Array.isArray(value) || value.some((account) => typeof account !== "string" || !account.trim())) {
+    throw new Error("The saved account order is invalid.");
+  }
+  return [...new Set(value.map(normalize))];
+}
+
+async function loadAccountOrder() {
+  if (supabase) {
+    const { data, error } = await supabase.from("account_order").select("accounts").eq("id", 1).maybeSingle();
+    if (error) throw error;
+    return data ? parseAccountOrder(data.accounts) : [];
+  }
+  const stored = localStorage.getItem(ACCOUNT_ORDER_STORAGE_KEY);
+  return stored === null ? [] : parseAccountOrder(JSON.parse(stored));
+}
+
+async function moveAccount(account, direction) {
+  if (accountOrderSaving) return;
+  if (!accountOrderReady) {
+    setAccountOrderStatus("Account order is unavailable. Check the Supabase setup and reload.", true);
+    return;
+  }
+  const accounts = [...new Set(builders.map((row) => normalize(row.account)))].sort(compareAccounts);
+  const index = accounts.indexOf(normalize(account));
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= accounts.length) return;
+  [accounts[index], accounts[target]] = [accounts[target], accounts[index]];
+  const nextOrder = [...accounts, ...accountOrder.filter((key) => !accounts.includes(key))];
+  accountOrderSaving = true;
+  setAccountOrderStatus("Saving account order...");
+  try {
+    if (supabase) {
+      const { error } = await supabase.from("account_order").upsert({ id: 1, accounts: nextOrder });
+      if (error) throw error;
+    } else {
+      localStorage.setItem(ACCOUNT_ORDER_STORAGE_KEY, JSON.stringify(nextOrder));
+    }
+    accountOrder = nextOrder;
+    refreshAccountFilter();
+    refreshWebhookAccountOptions(elements.webhookAccountSelect.value);
+    render();
+    setAccountOrderStatus("Account order saved.");
+  } catch (error) {
+    setAccountOrderStatus(`Could not save account order: ${error.message}`, true);
+  } finally {
+    accountOrderSaving = false;
+  }
+}
+
+function setAccountOrderStatus(message, isError = false) {
+  elements.accountOrderStatus.textContent = message;
+  elements.accountOrderStatus.classList.toggle("error", isError);
+}
+
 function currentVillage() {
   return document.querySelector('input[name="village"]:checked')?.value || HOME_VILLAGE;
 }
 
+function currentBuilderType() {
+  return elements.builderTypeSelect.value || BUILDER_TYPE;
+}
+
+function refreshBuilderTypeOptions() {
+  const village = currentVillage();
+  const types = VILLAGE_BUILDER_TYPES[village] || VILLAGE_BUILDER_TYPES[HOME_VILLAGE];
+  const selectedType = types.includes(currentBuilderType()) ? currentBuilderType() : BUILDER_TYPE;
+  elements.builderTypeSelect.replaceChildren(...types.map((type) => new Option(type, type)));
+  elements.builderTypeSelect.value = selectedType;
+  elements.builderCountInput.placeholder = selectedType === BUILDER_TYPE ? "6" : "1";
+}
+
+function builderLabel(row) {
+  const type = row.builderType || BUILDER_TYPE;
+  return `${type} ${row.builder}`;
+}
+
 function makeBuilderKey(row) {
-  return [normalize(row.account), normalize(row.village), normalize(row.builder)].join("|");
+  return [normalize(row.account), normalize(row.village), normalize(row.builderType || BUILDER_TYPE), normalize(row.builder)].join("|");
 }
 
 function formatRemaining(finishAt, now = Date.now()) {
@@ -325,28 +513,38 @@ function finishIsDone(row, now = Date.now()) {
   return new Date(row.finishAt).getTime() <= now;
 }
 
+function compareBuilderRows(left, right) {
+  const accountComparison = compareAccounts(left.account, right.account);
+  if (accountComparison) return accountComparison;
+  const villageOrder = left.village.localeCompare(right.village, undefined, { sensitivity: "base" });
+  if (villageOrder) return villageOrder;
+  const typeOrder = (left.builderType || BUILDER_TYPE).localeCompare(right.builderType || BUILDER_TYPE, undefined, { sensitivity: "base" });
+  if (typeOrder) return typeOrder;
+  return Number(left.builder) - Number(right.builder);
+}
+
 function filteredBuilders() {
   const village = elements.villageFilter.value;
   const account = elements.accountFilter.value;
   return builders
     .map((row, index) => ({ row, index }))
     .filter(({ row }) => (!village || row.village === village) && (!account || normalize(row.account) === normalize(account)))
-    .sort((left, right) => {
-      const accountOrder = left.row.account.localeCompare(right.row.account, undefined, { sensitivity: "base" });
-      if (accountOrder) return accountOrder;
-      const villageOrder = left.row.village.localeCompare(right.row.village, undefined, { sensitivity: "base" });
-      if (villageOrder) return villageOrder;
-      return Number(left.row.builder) - Number(right.row.builder);
-    });
+    .sort((left, right) => compareBuilderRows(left.row, right.row));
 }
 
 function refreshAccountFilter() {
   const currentValue = elements.accountFilter.value;
+  const selectedAccount = elements.addAccountSelect.value;
   const accounts = [...new Set(builders.map((row) => row.account))]
-    .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+    .sort(compareAccounts);
   elements.accountFilter.replaceChildren(new Option("All accounts", ""));
   for (const account of accounts) elements.accountFilter.add(new Option(account, account));
   elements.accountFilter.value = accounts.includes(currentValue) ? currentValue : "";
+  const uniqueAccounts = [...new Map(accounts.map((account) => [normalize(account), account])).values()];
+  elements.addAccountSelect.replaceChildren(new Option("New account", ""));
+  for (const account of uniqueAccounts) elements.addAccountSelect.add(new Option(account, account));
+  elements.addAccountSelect.value = uniqueAccounts.find((account) => normalize(account) === normalize(selectedAccount)) || "";
+  elements.accountInput.disabled = Boolean(elements.addAccountSelect.value);
 }
 
 function updateOverview() {
@@ -381,14 +579,16 @@ function renderAccountSummary() {
   const cards = document.createDocumentFragment();
   elements.accountSummaryEmpty.hidden = accounts.size > 0;
   const sortedAccounts = [...accounts.values()]
-    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
-  for (const account of sortedAccounts) {
+    .sort((left, right) => compareAccounts(left.name, right.name));
+  for (const [index, account] of sortedAccounts.entries()) {
+    const item = document.createElement("div");
+    item.className = "account-summary-item";
     const card = document.createElement("button");
     card.type = "button";
     card.className = "account-summary-card";
     card.dataset.account = account.value;
     card.setAttribute("aria-pressed", String(normalize(elements.accountFilter.value) === normalize(account.value)));
-    card.title = `Show all builders for ${account.name}`;
+    card.title = `Show all timers for ${account.name}`;
     const name = document.createElement("span");
     name.className = "account-summary-name";
     name.textContent = account.name;
@@ -400,10 +600,28 @@ function renderAccountSummary() {
       const village = document.createElement("span");
       village.className = `village-chip ${className}`;
       village.textContent = `${label}: ${counts.active}/${counts.total}`;
-      village.setAttribute("aria-label", `${label} Village: ${counts.active} in progress out of ${counts.total} builders`);
+      village.setAttribute("aria-label", `${label} Village: ${counts.active} in progress out of ${counts.total} timers`);
       card.append(village);
     }
-    cards.append(card);
+    const controls = document.createElement("div");
+    controls.className = "account-order-controls";
+    for (const [direction, label, symbol, disabled] of [
+      [-1, "earlier", "←", index === 0],
+      [1, "later", "→", index === sortedAccounts.length - 1],
+    ]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "account-order-button";
+      button.dataset.account = account.value;
+      button.dataset.direction = String(direction);
+      button.setAttribute("aria-label", `Move ${account.name} ${label}`);
+      button.title = `Move ${label}`;
+      button.textContent = symbol;
+      button.disabled = disabled || !accountOrderReady;
+      controls.append(button);
+    }
+    item.append(card, controls);
+    cards.append(item);
   }
   const nextCards = [...cards.children];
   const currentCards = [...elements.accountSummary.children];
@@ -411,15 +629,23 @@ function renderAccountSummary() {
     const focusedAccount = elements.accountSummary.contains(document.activeElement)
       ? document.activeElement.dataset.account
       : null;
+    const focusedDirection = document.activeElement.dataset?.direction;
     elements.accountSummary.replaceChildren(cards);
     if (focusedAccount !== null) {
-      nextCards.find((card) => card.dataset.account === focusedAccount)?.focus({ preventScroll: true });
+      const buttons = nextCards.flatMap((card) => [...card.querySelectorAll("button")]);
+      const focusedButton = buttons.find((button) => button.dataset.account === focusedAccount
+        && button.dataset.direction === focusedDirection && !button.disabled)
+        || buttons.find((button) => button.dataset.account === focusedAccount && !button.disabled);
+      focusedButton?.focus({ preventScroll: true });
     }
   }
 }
 
 function renderRows() {
   const visible = filteredBuilders();
+  const focused = elements.builderRows.contains(document.activeElement) ? document.activeElement : null;
+  const focusedId = focused?.closest("tr")?.dataset.id;
+  const focusedAction = focused?.dataset.action;
   elements.builderRows.replaceChildren();
   elements.emptyState.classList.toggle("visible", visible.length === 0);
   elements.resultCount.textContent = String(visible.length);
@@ -443,7 +669,22 @@ function renderRows() {
     });
 
     const builderCell = document.createElement("td");
-    builderCell.textContent = `Builder ${row.builder}`;
+    const builderName = document.createElement("span");
+    builderName.textContent = builderLabel(row);
+    builderCell.append(builderName);
+    if (canAssignLabAssistant(row, now)) {
+      const assignButton = document.createElement("button");
+      assignButton.type = "button";
+      assignButton.className = "row-action assistant-row-action";
+      assignButton.dataset.action = "assign";
+      assignButton.textContent = "Assign assistant";
+      assignButton.setAttribute("aria-label", `Assign Lab Assistant to ${row.account}, ${builderLabel(row)}`);
+      assignButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openLabAssistantDialog(row.id);
+      });
+      builderCell.append(assignButton);
+    }
     const villageCell = document.createElement("td");
     const villageChip = document.createElement("span");
     villageChip.className = `village-chip ${row.village === NIGHT_VILLAGE ? "night" : "home"}`;
@@ -454,16 +695,32 @@ function renderRows() {
     accountCell.textContent = row.account;
     const timerCell = document.createElement("td");
     timerCell.className = "timer-cell";
-    timerCell.textContent = isDone ? "Done" : formatRemaining(row.finishAt, now);
+    const saved = savedForLab(row, now);
+    if (saved !== null) {
+      const savedDisplay = document.createElement("span");
+      savedDisplay.className = "assistant-row-saved";
+      const savedLabel = document.createElement("span");
+      savedLabel.className = "assistant-saved-label";
+      savedLabel.textContent = "Saved: ";
+      const savedValue = document.createElement("span");
+      savedValue.className = "assistant-saved-value";
+      savedValue.textContent = formatRemaining(saved, 0);
+      savedDisplay.append(savedLabel, savedValue);
+      timerCell.append(savedDisplay);
+    }
+    const remaining = document.createElement("span");
+    remaining.textContent = isDone ? "Done" : formatRemaining(remainingForRow(row, now), 0);
+    timerCell.append(remaining);
     const finishCell = document.createElement("td");
     finishCell.className = "finish-cell";
     finishCell.textContent = formatFinish(row.finishAt);
     const selectCell = document.createElement("td");
     const selectButton = document.createElement("button");
     selectButton.className = "row-action";
+    selectButton.dataset.action = "select";
     selectButton.type = "button";
-    selectButton.setAttribute("aria-label", `Select ${row.account}, ${row.village}, builder ${row.builder}`);
-    selectButton.title = "Select builder";
+    selectButton.setAttribute("aria-label", `Select ${row.account}, ${row.village}, ${builderLabel(row)}`);
+    selectButton.title = "Select timer";
     selectButton.textContent = "Edit";
     selectButton.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -472,6 +729,10 @@ function renderRows() {
     selectCell.append(selectButton);
     tr.append(builderCell, villageCell, accountCell, timerCell, finishCell, selectCell);
     elements.builderRows.append(tr);
+  }
+  if (focusedId && focusedAction) {
+    const row = [...elements.builderRows.rows].find((item) => item.dataset.id === focusedId);
+    row?.querySelector(`[data-action="${focusedAction}"]`)?.focus({ preventScroll: true });
   }
 }
 
@@ -484,11 +745,195 @@ function renderEditor() {
   const isNight = row.village === NIGHT_VILLAGE;
   elements.editorVillage.className = `village-chip ${isNight ? "night" : "home"}`;
   elements.editorVillage.textContent = row.village;
-  elements.editorName.textContent = `Builder ${row.builder}`;
+  elements.editorName.textContent = builderLabel(row);
   elements.editorAccount.textContent = row.account;
-  const isDone = finishIsDone(row);
-  elements.editorTimeLeft.textContent = isDone ? "Done" : formatRemaining(row.finishAt);
+  const now = Date.now();
+  const isDone = finishIsDone(row, now);
+  elements.editorTimeLeft.textContent = isDone ? "Done" : formatRemaining(remainingForRow(row, now), 0);
+  const saved = savedForLab(row, now);
+  elements.labAssistantSaved.hidden = saved === null;
+  elements.labAssistantSavedValue.textContent = saved === null ? "" : formatRemaining(saved, 0);
   elements.markDoneButton.hidden = isDone;
+  renderLabAssistant(row, isDone);
+}
+
+function renderLabAssistant(row, isDone) {
+  const isHomeLab = row.village === HOME_VILLAGE && row.builderType === "Lab";
+  elements.labAssistantPanel.hidden = !isHomeLab;
+  if (!isHomeLab) return;
+  const assistant = labAssistants.get(normalize(row.account));
+  const now = Date.now();
+  const availability = labAssistantAvailability(assistant, now);
+  const activePlan = assistant?.timerId && assistant.projectedFinish > now;
+  const ownPlan = activePlan && assistant.timerId === row.id;
+  const reserved = activePlan && assistant.repeat;
+  elements.labAssistantState.textContent = !labAssistantsReady
+    ? "Lab Assistant data is unavailable. Check the Supabase setup and reload."
+    : activePlan && !ownPlan
+      ? "Assistant is assigned to another Lab timer."
+    : reserved
+      ? `Kept assigned. Next workday in ${formatRemaining(availability.availableAt, now)}.`
+      : availability.available
+        ? "Assistant ready to assign."
+        : `Next available in ${formatRemaining(availability.availableAt, now)}.`;
+  elements.stopLabAssistantButton.hidden = !ownPlan;
+  elements.stopLabAssistantButton.disabled = labAssistantSaving;
+}
+
+function openLabAssistantDialog(id) {
+  const row = builders.find((builder) => builder.id === id);
+  if (!row || !canAssignLabAssistant(row, Date.now())) return;
+  selectBuilder(id);
+  const assistant = labAssistants.get(normalize(row.account));
+  elements.labAssistantDialogTarget.textContent = `${row.account} — ${builderLabel(row)}`;
+  elements.labAssistantLevel.value = String(assistant?.level ?? 1);
+  elements.labAssistantWorkday.value = "";
+  elements.labAssistantRepeat.checked = false;
+  elements.labAssistantStatus.textContent = "";
+  elements.labAssistantStatus.classList.remove("error");
+  elements.labAssistantDialog.showModal();
+}
+
+async function assignLabAssistant(event) {
+  event.preventDefault();
+  const row = builders.find((builder) => builder.id === selectedId);
+  if (!row || row.village !== HOME_VILLAGE || row.builderType !== "Lab") {
+    elements.labAssistantStatus.textContent = "Select a Home Village Lab timer.";
+    elements.labAssistantStatus.classList.add("error");
+    return;
+  }
+  const level = Number(elements.labAssistantLevel.value);
+  const repeat = elements.labAssistantRepeat.checked;
+  try {
+    if (!labAssistantsReady) throw new Error("Lab Assistant data is unavailable. Check the setup and reload.");
+    if (!Number.isInteger(level) || level < 1 || level > 12) throw new Error("Choose a Lab Assistant level from 1 to 12.");
+    const now = Date.now();
+    const current = labAssistants.get(normalize(row.account));
+    if (finishIsDone(row, now)) throw new Error("Start a Lab upgrade before assigning the assistant.");
+    if (current?.timerId !== row.id && current?.projectedFinish > now) throw new Error("The Lab Assistant is assigned to another Lab timer.");
+    if (!labAssistantAvailability(current, now).available) throw new Error("The Lab Assistant is not available yet.");
+    const workdayText = elements.labAssistantWorkday.value.trim();
+    const workdaySeconds = workdayText ? parseDuration(workdayText) : null;
+    if (workdaySeconds !== null && (workdaySeconds < 1 || workdaySeconds > WORKDAY / 1000)) {
+      throw new Error("Enter a shared workday remaining between 1 second and 23 hours.");
+    }
+    labAssistantSaving = true;
+    elements.assignLabAssistantButton.disabled = true;
+    render();
+    if (supabase) {
+      const { data, error } = await supabase.rpc("assign_lab_assistant", {
+        p_timer_id: row.id,
+        p_level: level,
+        p_keep_assigned: repeat,
+        p_workday_seconds: workdaySeconds,
+        p_expected_finish: row.finishAt,
+      });
+      if (error) throw error;
+      const index = builders.findIndex((builder) => builder.id === row.id);
+      if (index >= 0) builders[index] = fromSupabaseRow(data.timer);
+      const assistant = fromSupabaseAssistant(data.assistant);
+      labAssistants.set(assistant.accountKey, assistant);
+    } else {
+      const baseFinish = new Date(row.finishAt).getTime();
+      const workdayEnd = now + (workdaySeconds ?? WORKDAY / 1000) * 1000;
+      const forecast = forecastLabAssistant(now, baseFinish, workdayEnd, level, repeat);
+      const assistant = {
+        accountKey: normalize(row.account),
+        level,
+        timerId: row.id,
+        startedAt: now,
+        workdayEnd,
+        workUntil: Math.min(now + HOUR, forecast.projectedFinish),
+        nextSession: forecast.nextSession,
+        baseFinish,
+        projectedFinish: forecast.projectedFinish,
+        repeat,
+        savedMs: savedForLab(row, now) ?? 0,
+      };
+      const previousAssistant = current;
+      const previousRow = { ...row };
+      row.finishAt = new Date(forecast.projectedFinish).toISOString();
+      row.discordAlertEnabled = true;
+      row.discordAlertSentAt = null;
+      row.discordAlertClaimedAt = null;
+      labAssistants.set(assistant.accountKey, assistant);
+      if (!saveBuilders()) {
+        Object.assign(row, previousRow);
+        if (previousAssistant) labAssistants.set(assistant.accountKey, previousAssistant);
+        else labAssistants.delete(assistant.accountKey);
+        throw new Error("Could not save the Lab Assistant assignment in this browser.");
+      }
+    }
+    if (supabase) saveBuilders();
+    elements.labAssistantWorkday.value = "";
+    elements.labAssistantDialog.close();
+    setEditorStatus("Assistant assignment tracked. Assign it in the game too.");
+  } catch (error) {
+    elements.labAssistantStatus.textContent = error.message;
+    elements.labAssistantStatus.classList.add("error");
+  } finally {
+    labAssistantSaving = false;
+    elements.assignLabAssistantButton.disabled = false;
+    render();
+  }
+}
+
+async function stopLabAssistant() {
+  const row = builders.find((builder) => builder.id === selectedId);
+  if (!row || !hasTrackedLabAssistant(row)) {
+    setEditorStatus("There is no active assignment on this Lab timer.", true);
+    return;
+  }
+  if (!window.confirm("Stop tracking this assignment? Future projected boosts will be removed, but time already saved is kept. If the assistant continues working in the game, the estimate will not match.")) return;
+  labAssistantSaving = true;
+  render();
+  try {
+    if (supabase) {
+      const { data, error } = await supabase.rpc("stop_lab_assistant", { p_timer_id: row.id });
+      if (error) throw error;
+      const index = builders.findIndex((builder) => builder.id === row.id);
+      if (index >= 0) builders[index] = fromSupabaseRow(data.timer);
+      const assistant = fromSupabaseAssistant(data.assistant);
+      labAssistants.set(assistant.accountKey, assistant);
+    } else {
+      const now = Date.now();
+      const key = normalize(row.account);
+      const assistant = labAssistants.get(key);
+      const saved = savedLabTime(assistant, now);
+      const availability = labAssistantAvailability(assistant, now);
+      const previousRow = { ...row };
+      const restoredFinish = Math.max(now, assistant.baseFinish - (saved - (assistant.savedMs || 0)));
+      row.finishAt = new Date(restoredFinish).toISOString();
+      row.discordAlertEnabled = restoredFinish > now;
+      row.discordAlertSentAt = null;
+      row.discordAlertClaimedAt = null;
+      labAssistants.set(key, {
+        accountKey: key,
+        level: assistant.level,
+        timerId: row.id,
+        startedAt: availability.startedAt,
+        workdayEnd: availability.workdayEnd,
+        workUntil: now,
+        nextSession: null,
+        baseFinish: restoredFinish,
+        projectedFinish: null,
+        repeat: false,
+        savedMs: saved,
+      });
+      if (!saveBuilders()) {
+        Object.assign(row, previousRow);
+        labAssistants.set(key, assistant);
+        throw new Error("Could not stop tracking in this browser.");
+      }
+    }
+    if (supabase) saveBuilders();
+    setEditorStatus("Assistant tracking stopped. Time already saved was kept.");
+  } catch (error) {
+    setEditorStatus(error.message, true);
+  } finally {
+    labAssistantSaving = false;
+    render();
+  }
 }
 
 function render() {
@@ -499,18 +944,26 @@ function render() {
 }
 
 function selectBuilder(id) {
-  if (selectedId !== id) setEditorStatus("");
+  if (selectedId !== id) {
+    setEditorStatus("");
+  }
   selectedId = id;
   render();
 }
 
 async function addBuilders(event) {
   event.preventDefault();
-  const account = elements.accountInput.value.trim();
+  if (!supabase && !labAssistantsReady) {
+    setAddStatus("Lab Assistant data could not be loaded; timers cannot be saved.", true);
+    return;
+  }
+  const enteredAccount = elements.addAccountSelect.value || elements.accountInput.value.trim();
+  const account = builders.find((row) => normalize(row.account) === normalize(enteredAccount))?.account || enteredAccount;
   const count = Number(elements.builderCountInput.value);
   const village = currentVillage();
+  const builderType = currentBuilderType();
   if (!account) {
-    setAddStatus("Enter an account name.", true);
+    setAddStatus("Select an existing account or enter a new account name.", true);
     elements.accountInput.focus();
     return;
   }
@@ -521,7 +974,9 @@ async function addBuilders(event) {
   }
 
   const existing = new Set(builders
-    .filter((row) => normalize(row.account) === normalize(account) && row.village === village)
+    .filter((row) => normalize(row.account) === normalize(account)
+      && row.village === village
+      && normalize(row.builderType || BUILDER_TYPE) === normalize(builderType))
     .map((row) => String(row.builder)));
   const added = [];
   for (let number = 1; number <= count; number += 1) {
@@ -531,6 +986,7 @@ async function addBuilders(event) {
       id: makeId(),
       account,
       village,
+      builderType,
       builder,
       finishAt: new Date().toISOString(),
       discordAlertEnabled: false,
@@ -557,33 +1013,48 @@ async function addBuilders(event) {
   if (!saveBuilders() && !supabase) return;
   elements.accountInput.value = "";
   elements.builderCountInput.value = "";
+  refreshBuilderTypeOptions();
   elements.villageFilter.value = village;
   refreshAccountFilter();
+  elements.addAccountSelect.value = [...elements.addAccountSelect.options]
+    .find((option) => normalize(option.value) === normalize(account))?.value || "";
+  elements.accountInput.disabled = Boolean(elements.addAccountSelect.value);
   elements.accountFilter.value = account;
   const nextSelectedId = committed.at(-1)?.id ?? null;
   if (selectedId !== nextSelectedId) setEditorStatus("");
   selectedId = nextSelectedId;
   render();
-  setAddStatus(added.length ? `Added ${added.length} ${village} builder${added.length === 1 ? "" : "s"} for ${account}.` : `Those builders already exist for ${account}.`);
+  setAddStatus(added.length
+    ? `Added ${added.length} ${builderType} timer${added.length === 1 ? "" : "s"} for ${account} in ${village}.`
+    : `Those ${builderType} timers already exist for ${account} in ${village}.`);
 }
 
 function parseDuration(text) {
-  const matcher = /(\d+)\s*([dhm])/gi;
+  const matcher = /(\d+)\s*([dhms])/gi;
   const parts = [...text.matchAll(matcher)];
   const residue = text.replace(matcher, "").trim();
-  if (!parts.length || residue) throw new Error("Enter a time like 2d 5h 30m, or use 0m for done.");
+  if (!parts.length || residue) throw new Error("Enter a time like 2d 5h 30m or 30s, or use 0m for done.");
   return parts.reduce((total, [, amount, unit]) => {
     const value = Number(amount);
     if (unit.toLowerCase() === "d") return total + value * 86400;
     if (unit.toLowerCase() === "h") return total + value * 3600;
-    return total + value * 60;
+    if (unit.toLowerCase() === "m") return total + value * 60;
+    return total + value;
   }, 0);
 }
 
 async function updateSelectedTime(markDone = false) {
+  if (!supabase && !labAssistantsReady) {
+    setEditorStatus("Lab Assistant data could not be loaded; timers cannot be saved.", true);
+    return;
+  }
   const row = builders.find((builder) => builder.id === selectedId);
   if (!row) {
     setEditorStatus("Select a builder first.", true);
+    return;
+  }
+  if (hasTrackedLabAssistant(row)) {
+    setEditorStatus("Stop Lab Assistant tracking before changing this timer.", true);
     return;
   }
   try {
@@ -609,7 +1080,7 @@ async function updateSelectedTime(markDone = false) {
     row.discordAlertClaimedAt = null;
     if (!saveBuilders() && !supabase) return;
     elements.durationInput.value = "";
-    setEditorStatus(markDone ? "Builder marked done." : "Timer updated.");
+    setEditorStatus(markDone ? `${builderLabel(row)} marked done.` : "Timer updated.");
     render();
   } catch (error) {
     setEditorStatus(error.message, true);
@@ -617,12 +1088,20 @@ async function updateSelectedTime(markDone = false) {
 }
 
 async function removeSelected() {
+  if (!supabase && !labAssistantsReady) {
+    setEditorStatus("Lab Assistant data could not be loaded; timers cannot be saved.", true);
+    return;
+  }
   const index = builders.findIndex((builder) => builder.id === selectedId);
   if (index < 0) {
     setEditorStatus("Select a builder first.", true);
     return;
   }
   const removed = builders[index];
+  if (hasTrackedLabAssistant(removed)) {
+    setEditorStatus("Stop Lab Assistant tracking before removing this timer.", true);
+    return;
+  }
   if (supabase) {
     if (!remoteReady) {
       setEditorStatus("Supabase is not connected yet.", true);
@@ -646,7 +1125,7 @@ async function removeSelected() {
   }
   refreshAccountFilter();
   render();
-  setAddStatus(`Removed Builder ${removed.builder} from ${removed.account}.`);
+  setAddStatus(`Removed ${builderLabel(removed)} from ${removed.account}.`);
 }
 
 function parseCsv(text) {
@@ -699,6 +1178,7 @@ function parseCsvFinish(value) {
 
 async function importCsv(file) {
   try {
+    if (!supabase && !labAssistantsReady) throw new Error("Lab Assistant data could not be loaded; timers cannot be saved.");
     const text = await file.text();
     if (!text.trim()) throw new Error("CSV file is empty.");
     const rows = parseCsv(text);
@@ -707,6 +1187,7 @@ async function importCsv(file) {
     const accountColumn = column("Account");
     const villageColumn = column("Village");
     const builderColumn = column("Builder");
+    const builderTypeColumn = column("Builder Type");
     const finishColumn = column("Finish At");
     if ([accountColumn, builderColumn, finishColumn].some((index) => index < 0)) {
       throw new Error("CSV needs Account, Builder, and Finish At columns.");
@@ -726,6 +1207,7 @@ async function importCsv(file) {
         id: makeId(),
         account,
         village,
+        builderType: (builderTypeColumn < 0 ? "" : cells[builderTypeColumn] ?? "").trim() || BUILDER_TYPE,
         builder,
         finishAt,
         discordAlertEnabled: new Date(finishAt).getTime() > Date.now(),
@@ -735,6 +1217,9 @@ async function importCsv(file) {
       const key = makeBuilderKey(row);
       const existing = byKey.get(key);
       if (existing) {
+        if (hasTrackedLabAssistant(existing) && new Date(existing.finishAt).getTime() !== new Date(finishAt).getTime()) {
+          throw new Error(`Stop Lab Assistant tracking before importing changes to ${existing.account}'s Lab timer.`);
+        }
         existing.finishAt = row.finishAt;
         existing.discordAlertEnabled = row.discordAlertEnabled;
         existing.discordAlertSentAt = null;
@@ -770,8 +1255,9 @@ function escapeCsv(value) {
 }
 
 function exportCsv() {
-  const header = ["Account", "Village", "Builder", "Finish At"];
-  const rows = builders.map((row) => [row.account, row.village, row.builder, new Date(row.finishAt).toLocaleString("sv-SE")]);
+  const header = ["Account", "Village", "Builder Type", "Builder", "Finish At"];
+  const rows = [...builders].sort(compareBuilderRows)
+    .map((row) => [row.account, row.village, row.builderType || BUILDER_TYPE, row.builder, new Date(row.finishAt).toLocaleString("sv-SE")]);
   const csv = [header, ...rows].map((row) => row.map(escapeCsv).join(",")).join("\r\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
@@ -779,10 +1265,18 @@ function exportCsv() {
   link.download = "builder-timers.csv";
   link.click();
   URL.revokeObjectURL(url);
-  setAddStatus(`Exported ${builders.length} builder row${builders.length === 1 ? "" : "s"}.`);
+  setAddStatus(`Exported ${builders.length} timer row${builders.length === 1 ? "" : "s"}.`);
 }
 
 elements.addForm.addEventListener("submit", addBuilders);
+elements.addAccountSelect.addEventListener("change", () => {
+  elements.accountInput.disabled = Boolean(elements.addAccountSelect.value);
+  setAddStatus("");
+});
+elements.builderTypeSelect.addEventListener("change", refreshBuilderTypeOptions);
+document.querySelectorAll('input[name="village"]').forEach((input) => {
+  input.addEventListener("change", refreshBuilderTypeOptions);
+});
 elements.villageFilter.addEventListener("change", () => {
   selectedId = null;
   setEditorStatus("");
@@ -794,6 +1288,11 @@ elements.accountFilter.addEventListener("change", () => {
   render();
 });
 elements.accountSummary.addEventListener("click", (event) => {
+  const moveButton = event.target.closest(".account-order-button");
+  if (moveButton) {
+    moveAccount(moveButton.dataset.account, Number(moveButton.dataset.direction));
+    return;
+  }
   const card = event.target.closest(".account-summary-card");
   if (!card) return;
   elements.accountFilter.value = card.dataset.account;
@@ -812,6 +1311,9 @@ elements.durationInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") updateSelectedTime();
 });
 elements.markDoneButton.addEventListener("click", () => updateSelectedTime(true));
+elements.labAssistantForm.addEventListener("submit", assignLabAssistant);
+elements.closeLabAssistantDialog.addEventListener("click", () => elements.labAssistantDialog.close());
+elements.stopLabAssistantButton.addEventListener("click", stopLabAssistant);
 elements.removeButton.addEventListener("click", removeSelected);
 elements.importButton.addEventListener("click", () => elements.csvFile.click());
 elements.csvFile.addEventListener("change", (event) => {
@@ -855,7 +1357,19 @@ async function initialize() {
     if ((supabaseUrl || supabaseKey) && !isExampleConfig) {
       setAddStatus("Set both Supabase environment variables to connect cloud storage.", true);
     }
+    try {
+      accountOrder = await loadAccountOrder();
+    } catch (error) {
+      setAccountOrderStatus(`Could not load account order: ${error.message}`, true);
+    }
+    try {
+      labAssistants = loadLocalAssistants();
+    } catch (error) {
+      labAssistantsReady = false;
+      setAddStatus(`Could not load Lab Assistant data: ${error.message}`, true);
+    }
     refreshAccountFilter();
+    refreshBuilderTypeOptions();
     render();
     return;
   }
@@ -864,13 +1378,29 @@ async function initialize() {
   try {
     let remoteBuilders = await fetchSupabaseBuilders();
     if (!remoteBuilders.length && builders.length) {
+      const localAssistants = loadLocalAssistants();
+      if ([...localAssistants.values()].some((assistant) => assistant.timerId && assistant.projectedFinish > Date.now())) {
+        throw new Error("Stop active local Lab Assistant tracking before migrating timers to Supabase.");
+      }
       await upsertSupabaseBuilders(builders);
       remoteBuilders = await fetchSupabaseBuilders();
     }
     builders = remoteBuilders;
     remoteReady = true;
     elements.storageLabel.textContent = "SUPABASE";
-    saveBuilders();
+    try {
+      labAssistants = await loadSupabaseAssistants();
+      labAssistantsReady = true;
+    } catch (error) {
+      setAddStatus(`Could not load Lab Assistant data: ${error.message}. Run the Supabase setup and reload.`, true);
+    }
+    if (labAssistantsReady) saveBuilders();
+    try {
+      accountOrder = await loadAccountOrder();
+      accountOrderReady = true;
+    } catch (error) {
+      setAccountOrderStatus(`Could not load account order: ${error.message}. Run the Supabase setup and reload.`, true);
+    }
     refreshAccountFilter();
     render();
   } catch (error) {
