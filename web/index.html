@@ -217,6 +217,27 @@
       </footer>
     </main>
 
+    <dialog class="webhook-dialog" id="clockTowerDialog" aria-labelledby="clockTowerDialogTitle">
+      <div class="webhook-dialog-heading">
+        <div>
+          <p class="eyebrow">NIGHT VILLAGE</p>
+          <h2 id="clockTowerDialogTitle">Clock Tower boost</h2>
+        </div>
+        <button class="dialog-close" id="closeClockTowerDialog" type="button" aria-label="Close">×</button>
+      </div>
+      <p class="webhook-dialog-copy" id="clockTowerTarget"></p>
+      <p class="assistant-help">All this account's Night Village Builders and Lab work at 10x speed. Home Village is unchanged. Activate the boost in the game too; this app only tracks it.</p>
+      <form id="clockTowerForm" class="assistant-form" novalidate>
+        <label class="field">
+          <span>Boost duration</span>
+          <input id="clockTowerDuration" type="text" value="30m" placeholder="e.g. 30m" autocomplete="off">
+        </label>
+        <p class="assistant-help">The free boost becomes available 22 hours after activation. No automatic repeat.</p>
+        <button class="button button-primary editor-save" id="activateClockTowerButton" type="submit">Activate 10x boost</button>
+        <p class="editor-status" id="clockTowerStatus" aria-live="polite"></p>
+      </form>
+    </dialog>
+
     <dialog class="webhook-dialog" id="labAssistantDialog" aria-labelledby="labAssistantDialogTitle">
       <div class="webhook-dialog-heading">
         <div>

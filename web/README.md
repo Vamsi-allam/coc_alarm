@@ -14,6 +14,10 @@ For a running **Home Village Lab** timer, select **Assign assistant** on its row
 
 The **Builder's Apprentice** works the same way, but only on regular **Home Village Builder** rows, at levels **1-8**. Select **Assign apprentice** to choose its level and repeat option. Each account has one Apprentice, separate from its Lab Assistant, so both can work at the same time but the Apprentice cannot be assigned to two builders. It cannot be assigned to Night Village, Lab, or Pet House rows. Both helpers share the tracked 23-hour workday: the second helper reuses the active workday automatically. The optional workday input is used only when no active workday is already tracked.
 
+For **Night Village**, use **Clock Tower boost** on the account card. Enter the boost duration (for example, **30m**), not a level, and activate it in the game too. One activation applies to **all that account's Night Village Builders and Lab timers**, at **10x total speed**, without affecting Home Village or other accounts. Saved time increases gradually at nine extra seconds per real second; the estimated finish includes the full expected boost so existing completion alerts work even with the browser closed. New or updated timers use only the remaining boost duration; enter their normal, unaccelerated upgrade time. Setting a new timer resets its saved-time counter. There is no automatic repeat.
+
+The account card shows the active boost and then the remaining **22-hour cooldown**, measured from activation. When ready, the boost button returns and a single ready alert is queued for that account's existing Discord channel. Local mode saves boosts and cooldowns in that browser but cannot send Discord alerts. Reload other devices after changes. CSV contains finish timestamps only, not boost history; importing a changed timer during a boost treats the imported finish as its normal, unaccelerated finish. Wait for any local Clock Tower cooldown to end before migrating to an empty Supabase timer table.
+
 The app does not interact with Clash of Clans; if the in-game assignment or workday changes, update the tracker to match. **Stop tracking assignment** retains time already saved and removes future projected work; if the helper continues working in the game, the estimate will no longer match. Stop tracking before editing, deleting, or importing a changed active helper timer. With Supabase, reload another device to see changes. Local-mode helper data stays in that browser; existing local helper assignments are not migrated to Supabase automatically. Stop any active local assignment before switching to Supabase with an empty timer table.
 
 In-progress builder rows have a steady amber background without blinking. Ready builders keep their green Home Village or blue Night Village backgrounds.
@@ -21,7 +25,7 @@ In-progress builder rows have a steady amber background without blinking. Ready 
 ## Configure Supabase
 
 1. Create a Supabase project.
-2. Open the Supabase SQL Editor and run (or rerun) `supabase_setup.sql`. It adds builder types and alert state to `builder_timers`, creates the shared `account_order` and `lab_assistants` tables, and creates the private `discord_webhooks` and `lab_assistant_alerts` tables.
+2. Open the Supabase SQL Editor and run (or rerun) `supabase_setup.sql`. It adds builder types, alert state, and boost progress to `builder_timers`, creates the shared `account_order`, `lab_assistants`, and `clock_towers` tables, and creates the private `discord_webhooks`, `lab_assistant_alerts`, and `clock_tower_alerts` tables.
 3. Copy `.env.example` to `.env.local` and set the project URL and publishable/anon key.
 4. Run `npm install`, then `npm run dev` from this directory.
 
@@ -45,6 +49,8 @@ Tracked Home Village Lab Assistants and Builder's Apprentices also send alerts t
 To enable these alerts on an existing installation, rerun `supabase_setup.sql` and redeploy `discord-builder-alerts`. The existing minute schedule and account webhooks are reused; no browser needs to remain open. Existing tracked assignments are included, so already-due events may arrive after enabling the feature. Stopping tracking cancels pending assistant work/upgrade alerts but retains the cooldown-ready alert. Local-only assignments cannot send Discord alerts.
 
 For the Apprentice update, also redeploy the frontend and reload open tabs. The migration preserves existing Lab Assistant assignments and alert history; the existing `lab_assistants` and `lab_assistant_alerts` tables now distinguish helpers using `helper_type`.
+
+For the Clock Tower update, run the updated `supabase_setup.sql` **first**, then redeploy `discord-builder-alerts` and the frontend, and reload open tabs. It adds public-readable `clock_towers` state, per-timer boost progress, a transactional activation function, and a private `clock_tower_alerts` queue. Existing timers and Home helper assignments are preserved. The existing minute schedule and account webhooks are reused. The same public/no-sign-in model allows site visitors to activate tracked boosts; the app does not activate anything in the game.
 
 ## Data migration
 

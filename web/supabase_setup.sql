@@ -501,3 +501,154 @@ create unique index if not exists discord_webhooks_account_normalized_idx
 alter table public.discord_webhooks enable row level security;
 revoke all on public.discord_webhooks from anon, authenticated;
 grant select, insert, update, delete on public.discord_webhooks to service_role;
+
+create table if not exists public.clock_towers (
+  account_key text primary key check (length(btrim(account_key)) > 0),
+  started_at timestamptz not null,
+  ends_at timestamptz not null,
+  available_at timestamptz not null,
+  check (ends_at > started_at and available_at >= ends_at)
+);
+
+alter table public.clock_towers enable row level security;
+grant select on public.clock_towers to anon;
+drop policy if exists "Public can read clock towers" on public.clock_towers;
+create policy "Public can read clock towers"
+  on public.clock_towers for select to anon using (true);
+
+alter table public.builder_timers
+  add column if not exists clock_started_at timestamptz,
+  add column if not exists clock_ends_at timestamptz,
+  add column if not exists clock_base_finish_at timestamptz,
+  add column if not exists clock_saved_seconds double precision not null default 0;
+
+create table if not exists public.clock_tower_alerts (
+  id uuid primary key default gen_random_uuid(),
+  account text not null,
+  due_at timestamptz not null,
+  sent_at timestamptz,
+  claimed_at timestamptz,
+  unique (account, due_at)
+);
+alter table public.clock_tower_alerts enable row level security;
+revoke all on public.clock_tower_alerts from public, anon, authenticated;
+grant select, update on public.clock_tower_alerts to service_role;
+
+create or replace function public.apply_clock_tower()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  c public.clock_towers%rowtype;
+  at_time timestamptz;
+  keep_saved double precision := 0;
+  new_boost boolean := false;
+begin
+  if new.village = 'Night Village' and new.builder_type in ('Builder', 'Lab') then
+    perform pg_advisory_xact_lock(hashtextextended(lower(btrim(new.account)), 22));
+    select * into c from public.clock_towers
+      where account_key = lower(btrim(new.account));
+  end if;
+  at_time := date_trunc('milliseconds', clock_timestamp());
+  if tg_op = 'UPDATE' then
+    new_boost := c.ends_at > at_time and (old.clock_started_at is null or c.started_at > old.clock_started_at);
+    if new.finish_at is not distinct from old.finish_at
+      and new.account = old.account and new.village = old.village and new.builder_type = old.builder_type
+      and not coalesce(new_boost, false) then
+      new.clock_started_at := old.clock_started_at;
+      new.clock_ends_at := old.clock_ends_at;
+      new.clock_base_finish_at := old.clock_base_finish_at;
+      new.clock_saved_seconds := old.clock_saved_seconds;
+      return new;
+    end if;
+    if new_boost and new.finish_at = old.finish_at then
+      keep_saved := old.clock_saved_seconds + case when old.clock_started_at is null then 0 else
+        greatest(0, extract(epoch from (least(at_time, old.clock_ends_at, old.finish_at) - old.clock_started_at))) * 9 end;
+    end if;
+  end if;
+  new.clock_started_at := null;
+  new.clock_ends_at := null;
+  new.clock_base_finish_at := null;
+  new.clock_saved_seconds := 0;
+  if c.ends_at > at_time and new.finish_at > clock_timestamp() then
+    new.clock_started_at := at_time;
+    new.clock_ends_at := c.ends_at;
+    new.clock_base_finish_at := new.finish_at;
+    new.clock_saved_seconds := keep_saved;
+    new.finish_at := date_trunc('milliseconds', new.finish_at
+      - least(c.ends_at - at_time, (new.finish_at - at_time) / 10) * 9);
+    new.discord_alert_enabled := true;
+    new.discord_alert_sent_at := null;
+    new.discord_alert_claimed_at := null;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists apply_clock_tower on public.builder_timers;
+create trigger apply_clock_tower before insert or update on public.builder_timers
+  for each row execute function public.apply_clock_tower();
+
+create or replace function public.activate_clock_tower(p_account text, p_duration_seconds integer)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  account_key_value text := lower(btrim(p_account));
+  at_time timestamptz;
+  c public.clock_towers%rowtype;
+  timers jsonb;
+begin
+  if p_account is null or account_key_value = '' or p_duration_seconds is null
+    or p_duration_seconds < 1 or p_duration_seconds > 79200 then
+    raise exception 'Enter a boost duration between 1 second and 22 hours.';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(account_key_value, 22));
+  at_time := date_trunc('milliseconds', clock_timestamp());
+  if not exists (select 1 from public.builder_timers where lower(btrim(account)) = account_key_value
+    and village = 'Night Village' and builder_type in ('Builder', 'Lab')) then
+    raise exception 'Add Night Village Builders or Lab timers for this account first.';
+  end if;
+  select * into c from public.clock_towers where account_key = account_key_value for update;
+  if c.available_at > at_time then raise exception 'The Clock Tower is still on cooldown.'; end if;
+  insert into public.clock_towers (account_key, started_at, ends_at, available_at)
+    values (account_key_value, at_time, at_time + make_interval(secs => p_duration_seconds), at_time + interval '22 hours')
+    on conflict (account_key) do update set started_at = excluded.started_at,
+      ends_at = excluded.ends_at, available_at = excluded.available_at
+    returning * into c;
+  -- The trigger applies this account-wide boost and also handles timers set during it.
+  with updated as (
+    update public.builder_timers set finish_at = finish_at
+    where lower(btrim(account)) = account_key_value and village = 'Night Village'
+      and builder_type in ('Builder', 'Lab') and finish_at > at_time
+    returning *
+  ) select coalesce(jsonb_agg(to_jsonb(updated)), '[]'::jsonb) into timers from updated;
+  insert into public.clock_tower_alerts (account, due_at) values (btrim(p_account), c.available_at);
+  return jsonb_build_object('boost', to_jsonb(c), 'timers', timers);
+end;
+$$;
+revoke all on function public.activate_clock_tower(text, integer) from public, anon, authenticated;
+grant execute on function public.activate_clock_tower(text, integer) to anon;
+
+create or replace function public.claim_due_clock_tower_alerts(batch_size integer default 50)
+returns setof public.clock_tower_alerts
+language sql
+security definer
+set search_path = ''
+as $$
+  with due as (
+    select id from public.clock_tower_alerts
+    where due_at <= now() and sent_at is null
+      and (claimed_at is null or claimed_at < now() - interval '5 minutes')
+    order by due_at limit least(greatest(batch_size, 1), 100)
+    for update skip locked
+  )
+  update public.clock_tower_alerts a set claimed_at = now()
+  from due where a.id = due.id returning a.*;
+$$;
+revoke all on function public.claim_due_clock_tower_alerts(integer) from public, anon, authenticated;
+grant execute on function public.claim_due_clock_tower_alerts(integer) to service_role;

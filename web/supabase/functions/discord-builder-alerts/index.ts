@@ -63,6 +63,12 @@ export default {
       console.error("Could not claim helper alerts.", assistantClaimError.message);
       return jsonResponse(500, { error: "Could not claim helper alerts. Run the updated database setup." });
     }
+    const { data: clockAlerts, error: clockClaimError } = await supabase
+      .rpc("claim_due_clock_tower_alerts", { batch_size: 50 });
+    if (clockClaimError) {
+      console.error("Could not claim Clock Tower alerts.", clockClaimError.message);
+      return jsonResponse(500, { error: "Could not claim Clock Tower alerts. Run the updated database setup." });
+    }
 
     const helperNames: Record<string, string> = { Lab: "Lab Assistant", Builder: "Builder's Apprentice" };
     function helperMessage(helperType: string, eventType: string) {
@@ -105,6 +111,17 @@ export default {
         description: helperMessage(alert.helper_type, alert.event_type)?.description,
         village: "Home Village",
         upgrade: alert.builder_number ? `${alert.helper_type} #${alert.builder_number}` : helperNames[alert.helper_type],
+        timestamp: alert.due_at,
+      })),
+      ...(clockAlerts ?? []).map((alert) => ({
+        table: "clock_tower_alerts" as const,
+        id: alert.id,
+        account: alert.account,
+        claimedAt: alert.claimed_at,
+        title: "Clock Tower Ready",
+        description: "Your Clock Tower's 22-hour cooldown has ended. The free 10x boost is ready to activate.",
+        village: "Night Village",
+        upgrade: "Clock Tower",
         timestamp: alert.due_at,
       })),
     ];

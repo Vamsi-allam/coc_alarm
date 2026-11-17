@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { HOUR, WORKDAY, HELPER_TYPES, helperKey, sharedWorkdayEnd, forecastLabAssistant, savedLabTime, remainingLabTime, labAssistantAvailability } from "./lab-assistant.js";
+import { CLOCK_COOLDOWN, clockEligible, applyClock, clockSaved, clockRemaining } from "./clock-tower.js";
 
 const STORAGE_KEY = "builder-desk-records-v1";
 const ACCOUNT_ORDER_STORAGE_KEY = "builder-desk-account-order-v1";
@@ -11,7 +12,7 @@ const VILLAGE_BUILDER_TYPES = {
   [NIGHT_VILLAGE]: [BUILDER_TYPE, "Lab"],
 };
 const TABLE_NAME = "builder_timers";
-const SUPABASE_COLUMNS = "id, account, village, builder_type, builder_number, finish_at, discord_alert_enabled, discord_alert_sent_at, discord_alert_claimed_at";
+const SUPABASE_COLUMNS = "id, account, village, builder_type, builder_number, finish_at, discord_alert_enabled, discord_alert_sent_at, discord_alert_claimed_at, clock_started_at, clock_ends_at, clock_base_finish_at, clock_saved_seconds";
 const config = import.meta.env ?? {};
 const supabaseUrl = (config.VITE_SUPABASE_URL?.trim() ?? "")
   .replace(/\/+$/, "")
@@ -90,9 +91,20 @@ const elements = {
   deleteWebhookButton: document.querySelector("#deleteWebhookButton"),
   lockWebhooksButton: document.querySelector("#lockWebhooksButton"),
   webhookStatus: document.querySelector("#webhookStatus"),
+  clockTowerDialog: document.querySelector("#clockTowerDialog"),
+  clockTowerTarget: document.querySelector("#clockTowerTarget"),
+  clockTowerForm: document.querySelector("#clockTowerForm"),
+  clockTowerDuration: document.querySelector("#clockTowerDuration"),
+  clockTowerStatus: document.querySelector("#clockTowerStatus"),
+  activateClockTowerButton: document.querySelector("#activateClockTowerButton"),
+  closeClockTowerDialog: document.querySelector("#closeClockTowerDialog"),
 };
 
 let builders = loadBuilders();
+let clockTowers = new Map();
+let clockTowersReady = false;
+let clockTowerSaving = false;
+let clockTowerAccount = null;
 let labAssistants = new Map();
 let labAssistantsReady = !supabase;
 let labAssistantSaving = false;
@@ -122,12 +134,12 @@ function loadBuilders() {
 }
 
 function saveBuilders() {
-  if (!labAssistantsReady) {
-    setAddStatus("Helper data could not be loaded; browser data was not overwritten.", true);
+  if (!labAssistantsReady || !clockTowersReady) {
+    setAddStatus("Helper or Clock Tower data could not be loaded; browser data was not overwritten.", true);
     return false;
   }
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ builders, labAssistants: [...labAssistants.values()] }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ builders, labAssistants: [...labAssistants.values()], clockTowers: [...clockTowers.values()] }));
     return true;
   } catch {
     setAddStatus("Could not save in this browser. Check available storage space.", true);
@@ -190,6 +202,7 @@ function hasTrackedLabAssistant(row, now = Date.now()) {
 }
 
 function savedForLab(row, now) {
+  if (clockEligible(row)) return clockSaved(row, now);
   const assistant = assistantForRow(row);
   if (assistant?.timerId !== row.id) return null;
   const finish = assistant.projectedFinish ?? assistant.baseFinish;
@@ -198,6 +211,7 @@ function savedForLab(row, now) {
 }
 
 function remainingForRow(row, now) {
+  if (clockEligible(row) && row.clockStartedAt != null) return clockRemaining(row, now);
   const assistant = assistantForRow(row);
   if (assistant?.projectedFinish != null && savedForLab(row, now) !== null) {
     return remainingLabTime(assistant, now);
@@ -223,6 +237,10 @@ function fromSupabaseRow(row) {
     discordAlertEnabled: row.discord_alert_enabled,
     discordAlertSentAt: row.discord_alert_sent_at,
     discordAlertClaimedAt: row.discord_alert_claimed_at,
+    clockStartedAt: row.clock_started_at ? Date.parse(row.clock_started_at) : null,
+    clockEndsAt: row.clock_ends_at ? Date.parse(row.clock_ends_at) : null,
+    clockBaseFinish: row.clock_base_finish_at ? Date.parse(row.clock_base_finish_at) : null,
+    clockSavedMs: (row.clock_saved_seconds || 0) * 1000,
   };
 }
 
@@ -640,6 +658,21 @@ function renderAccountSummary() {
       controls.append(button);
     }
     item.append(card, controls);
+    if (account.night.total) {
+      const boost = clockTowers.get(normalize(account.value));
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "clock-tower-button";
+      button.dataset.account = account.value;
+      button.dataset.action = "clock-tower";
+      button.disabled = !clockTowersReady || clockTowerSaving || boost?.availableAt > now;
+      button.textContent = !clockTowersReady ? "Clock Tower unavailable"
+        : boost?.endsAt > now ? `Clock Tower 10x: ${formatRemaining(boost.endsAt, now)}`
+          : boost?.availableAt > now ? `Clock Tower ready in ${formatRemaining(boost.availableAt, now)}`
+            : "Clock Tower boost";
+      button.setAttribute("aria-label", `${account.name}: ${button.textContent}`);
+      item.append(button);
+    }
     cards.append(item);
   }
   const nextCards = [...cards.children];
@@ -649,11 +682,12 @@ function renderAccountSummary() {
       ? document.activeElement.dataset.account
       : null;
     const focusedDirection = document.activeElement.dataset?.direction;
+    const focusedAction = document.activeElement.dataset?.action;
     elements.accountSummary.replaceChildren(cards);
     if (focusedAccount !== null) {
       const buttons = nextCards.flatMap((card) => [...card.querySelectorAll("button")]);
       const focusedButton = buttons.find((button) => button.dataset.account === focusedAccount
-        && button.dataset.direction === focusedDirection && !button.disabled)
+        && button.dataset.direction === focusedDirection && button.dataset.action === focusedAction && !button.disabled)
         || buttons.find((button) => button.dataset.account === focusedAccount && !button.disabled);
       focusedButton?.focus({ preventScroll: true });
     }
@@ -978,6 +1012,85 @@ function render() {
   renderEditor();
 }
 
+function fromSupabaseClock(row) {
+  return {
+    accountKey: row.account_key,
+    startedAt: Date.parse(row.started_at),
+    endsAt: Date.parse(row.ends_at),
+    availableAt: Date.parse(row.available_at),
+  };
+}
+
+function loadLocalClocks() {
+  const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+  const clocks = Array.isArray(stored) ? [] : stored.clockTowers ?? [];
+  if (!Array.isArray(clocks) || clocks.some((boost) => !boost.accountKey
+    || ![boost.startedAt, boost.endsAt, boost.availableAt].every(Number.isFinite))) {
+    throw new Error("Saved Clock Tower data is invalid.");
+  }
+  return new Map(clocks.map((boost) => [boost.accountKey, boost]));
+}
+
+function openClockTowerDialog(account) {
+  if (!clockTowersReady || clockTowerSaving || clockTowers.get(normalize(account))?.availableAt > Date.now()) return;
+  clockTowerAccount = account;
+  elements.clockTowerTarget.textContent = `${account} - all Night Village Builders and Lab timers`;
+  elements.clockTowerDuration.value = "30m";
+  elements.clockTowerStatus.textContent = "";
+  elements.clockTowerStatus.classList.remove("error");
+  elements.clockTowerDialog.showModal();
+}
+
+async function activateClockTower(event) {
+  event.preventDefault();
+  if (clockTowerSaving) return;
+  try {
+    if (!clockTowersReady || !clockTowerAccount) throw new Error("Clock Tower data is unavailable. Reload the app.");
+    const seconds = parseDuration(elements.clockTowerDuration.value.trim());
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > CLOCK_COOLDOWN / 1000) {
+      throw new Error("Enter a boost duration between 1 second and 22 hours.");
+    }
+    const now = Date.now();
+    const key = normalize(clockTowerAccount);
+    if (clockTowers.get(key)?.availableAt > now) throw new Error("The Clock Tower is still on cooldown.");
+    clockTowerSaving = true;
+    elements.activateClockTowerButton.disabled = true;
+    render();
+    if (supabase) {
+      const { data, error } = await supabase.rpc("activate_clock_tower", {
+        p_account: clockTowerAccount, p_duration_seconds: seconds,
+      });
+      if (error) throw error;
+      clockTowers.set(key, fromSupabaseClock(data.boost));
+      const updated = new Map(data.timers.map((timer) => [timer.id, fromSupabaseRow(timer)]));
+      builders = builders.map((row) => updated.get(row.id) ?? row);
+      saveBuilders();
+    } else {
+      const boost = { accountKey: key, startedAt: now, endsAt: now + seconds * 1000, availableAt: now + CLOCK_COOLDOWN };
+      const previousRows = builders;
+      const previousBoost = clockTowers.get(key);
+      builders = builders.map((row) => normalize(row.account) === key && clockEligible(row) && !finishIsDone(row, now)
+        ? applyClock(row, boost, now) : row);
+      clockTowers.set(key, boost);
+      if (!saveBuilders()) {
+        builders = previousRows;
+        if (previousBoost) clockTowers.set(key, previousBoost);
+        else clockTowers.delete(key);
+        throw new Error("Could not save the Clock Tower boost in this browser.");
+      }
+    }
+    elements.clockTowerDialog.close();
+    setAddStatus(`Clock Tower tracked for ${clockTowerAccount}: all Night Village Builders and Lab timers work at 10x. Activate it in the game too.`);
+  } catch (error) {
+    elements.clockTowerStatus.textContent = error.message;
+    elements.clockTowerStatus.classList.add("error");
+  } finally {
+    clockTowerSaving = false;
+    elements.activateClockTowerButton.disabled = false;
+    render();
+  }
+}
+
 function selectBuilder(id) {
   if (selectedId !== id) {
     setEditorStatus("");
@@ -1094,11 +1207,12 @@ async function updateSelectedTime(markDone = false) {
   }
   try {
     const seconds = markDone ? 0 : parseDuration(elements.durationInput.value.trim());
-    const finishAt = new Date(Date.now() + seconds * 1000).toISOString();
+    const now = Date.now();
+    const finishAt = new Date(now + seconds * 1000).toISOString();
     const alertEnabled = seconds > 0;
     if (supabase) {
       if (!remoteReady) throw new Error("Supabase is not connected yet.");
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from(TABLE_NAME)
         .update({
           finish_at: finishAt,
@@ -1106,14 +1220,23 @@ async function updateSelectedTime(markDone = false) {
           discord_alert_sent_at: null,
           discord_alert_claimed_at: null,
         })
-        .eq("id", row.id);
+        .eq("id", row.id)
+        .select(SUPABASE_COLUMNS)
+        .single();
       if (error) throw error;
+      Object.assign(row, fromSupabaseRow(data));
+    } else {
+      if (!clockTowersReady) throw new Error("Clock Tower data could not be loaded; reload before setting timers.");
+      const previousRow = { ...row };
+      Object.assign(row, applyClock({ ...row, finishAt }, clockTowers.get(normalize(row.account)), now, true), {
+        discordAlertEnabled: alertEnabled, discordAlertSentAt: null, discordAlertClaimedAt: null,
+      });
+      if (!saveBuilders()) {
+        Object.assign(row, previousRow);
+        return;
+      }
     }
-    row.finishAt = finishAt;
-    row.discordAlertEnabled = alertEnabled;
-    row.discordAlertSentAt = null;
-    row.discordAlertClaimedAt = null;
-    if (!saveBuilders() && !supabase) return;
+    if (supabase) saveBuilders();
     elements.durationInput.value = "";
     setEditorStatus(markDone ? `${builderLabel(row)} marked done.` : "Timer updated.");
     render();
@@ -1255,13 +1378,16 @@ async function importCsv(file) {
         if (hasTrackedLabAssistant(existing) && new Date(existing.finishAt).getTime() !== new Date(finishAt).getTime()) {
           throw new Error(`Stop helper tracking before importing changes to ${existing.account}'s ${builderLabel(existing)}.`);
         }
+        const changed = Date.parse(existing.finishAt) !== Date.parse(row.finishAt);
         existing.finishAt = row.finishAt;
         existing.discordAlertEnabled = row.discordAlertEnabled;
         existing.discordAlertSentAt = null;
         existing.discordAlertClaimedAt = null;
+        if (!supabase && changed) Object.assign(existing, applyClock(existing, clockTowers.get(normalize(account)), Date.now(), true));
       } else {
-        nextBuilders.push(row);
-        byKey.set(key, row);
+        const added = supabase ? row : applyClock(row, clockTowers.get(normalize(account)), Date.now(), true);
+        nextBuilders.push(added);
+        byKey.set(key, added);
       }
       imported += 1;
     }
@@ -1270,8 +1396,13 @@ async function importCsv(file) {
       await upsertSupabaseBuilders(nextBuilders);
       builders = await fetchSupabaseBuilders();
     } else {
+      if (!clockTowersReady) throw new Error("Clock Tower data could not be loaded; reload before importing timers.");
+      const previousRows = builders;
       builders = nextBuilders;
-      if (!saveBuilders()) return;
+      if (!saveBuilders()) {
+        builders = previousRows;
+        return;
+      }
     }
     saveBuilders();
     refreshAccountFilter();
@@ -1323,6 +1454,11 @@ elements.accountFilter.addEventListener("change", () => {
   render();
 });
 elements.accountSummary.addEventListener("click", (event) => {
+  const clockButton = event.target.closest('[data-action="clock-tower"]');
+  if (clockButton) {
+    openClockTowerDialog(clockButton.dataset.account);
+    return;
+  }
   const moveButton = event.target.closest(".account-order-button");
   if (moveButton) {
     moveAccount(moveButton.dataset.account, Number(moveButton.dataset.direction));
@@ -1347,6 +1483,8 @@ elements.durationInput.addEventListener("keydown", (event) => {
 });
 elements.markDoneButton.addEventListener("click", () => updateSelectedTime(true));
 elements.labAssistantForm.addEventListener("submit", assignLabAssistant);
+elements.clockTowerForm.addEventListener("submit", activateClockTower);
+elements.closeClockTowerDialog.addEventListener("click", () => elements.clockTowerDialog.close());
 elements.closeLabAssistantDialog.addEventListener("click", () => elements.labAssistantDialog.close());
 elements.stopLabAssistantButton.addEventListener("click", stopLabAssistant);
 elements.removeButton.addEventListener("click", removeSelected);
@@ -1398,6 +1536,13 @@ async function initialize() {
       setAccountOrderStatus(`Could not load account order: ${error.message}`, true);
     }
     try {
+      clockTowers = loadLocalClocks();
+      clockTowersReady = true;
+    } catch (error) {
+      clockTowersReady = false;
+      setAddStatus(`Could not load Clock Tower data: ${error.message}`, true);
+    }
+    try {
       labAssistants = loadLocalAssistants();
     } catch (error) {
       labAssistantsReady = false;
@@ -1414,6 +1559,10 @@ async function initialize() {
     let remoteBuilders = await fetchSupabaseBuilders();
     if (!remoteBuilders.length && builders.length) {
       const localAssistants = loadLocalAssistants();
+      const localClocks = loadLocalClocks();
+      if ([...localClocks.values()].some((boost) => boost.availableAt > Date.now())) {
+        throw new Error("Wait for the local Clock Tower cooldown to finish before migrating to an empty Supabase table.");
+      }
       if ([...localAssistants.values()].some((assistant) => assistant.timerId && assistant.projectedFinish > Date.now())) {
         throw new Error("Stop active local helper tracking before migrating timers to Supabase.");
       }
@@ -1423,6 +1572,14 @@ async function initialize() {
     builders = remoteBuilders;
     remoteReady = true;
     elements.storageLabel.textContent = "SUPABASE";
+    try {
+      const { data, error } = await supabase.from("clock_towers").select("*");
+      if (error) throw error;
+      clockTowers = new Map(data.map((row) => [row.account_key, fromSupabaseClock(row)]));
+      clockTowersReady = true;
+    } catch (error) {
+      setAddStatus(`Could not load Clock Tower data: ${error.message}. Run the updated Supabase setup and reload.`, true);
+    }
     try {
       labAssistants = await loadSupabaseAssistants();
       labAssistantsReady = true;
