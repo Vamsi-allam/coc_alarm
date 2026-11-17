@@ -1,11 +1,27 @@
 export const HOUR = 60 * 60 * 1000;
 export const WORKDAY = 23 * HOUR;
+export const HELPER_TYPES = {
+  Lab: { name: "Lab Assistant", maxLevel: 12, action: "Assign assistant" },
+  Builder: { name: "Builder's Apprentice", maxLevel: 8, action: "Assign apprentice" },
+};
 
-export function forecastLabAssistant(start, baseFinish, workdayEnd, level, repeat) {
+export function helperKey(accountKey, helperType = "Lab") {
+  return JSON.stringify([accountKey, helperType]);
+}
+
+export function sharedWorkdayEnd(plans, accountKey, now) {
+  const ends = [...plans].filter((plan) => plan.accountKey === accountKey)
+    .map((plan) => labAssistantAvailability(plan, now).workdayEnd)
+    .filter((end) => end > now);
+  return ends.length ? Math.max(...ends) : null;
+}
+
+export function forecastLabAssistant(start, baseFinish, workdayEnd, level, repeat, helperType = "Lab") {
   let remaining = baseFinish - start;
-  if (!Number.isFinite(remaining) || remaining <= 0 || !Number.isInteger(level) || level < 1 || level > 12
+  const helper = HELPER_TYPES[helperType];
+  if (!helper || !Number.isFinite(remaining) || remaining <= 0 || !Number.isInteger(level) || level < 1 || level > helper.maxLevel
       || workdayEnd <= start || workdayEnd > start + WORKDAY) {
-    throw new Error("Invalid Lab Assistant assignment.");
+    throw new Error("Invalid helper assignment.");
   }
   const nextSession = Math.max(workdayEnd, start + HOUR);
   const rate = level + 1;

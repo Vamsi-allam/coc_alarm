@@ -220,21 +220,21 @@
     <dialog class="webhook-dialog" id="labAssistantDialog" aria-labelledby="labAssistantDialogTitle">
       <div class="webhook-dialog-heading">
         <div>
-          <p class="eyebrow">HOME VILLAGE LAB</p>
+          <p class="eyebrow" id="helperDialogEyebrow">HOME VILLAGE LAB</p>
           <h2 id="labAssistantDialogTitle">Assign Lab Assistant</h2>
         </div>
         <button class="dialog-close" id="closeLabAssistantDialog" type="button" aria-label="Close">×</button>
       </div>
       <p class="webhook-dialog-copy" id="labAssistantDialogTarget"></p>
-      <p class="assistant-help">Assign the assistant in the game too. This app only tracks the estimate.</p>
+      <p class="assistant-help">Assign the helper in the game too. This app only tracks the estimate.</p>
       <form id="labAssistantForm" class="assistant-form" novalidate>
         <label class="field">
-          <span>Assistant level (1–12)</span>
+          <span id="helperLevelLabel">Assistant level (1–12)</span>
           <input id="labAssistantLevel" type="number" min="1" max="12" step="1" value="1">
         </label>
         <label class="field">
-          <span>Current shared workday remaining (optional)</span>
-          <input id="labAssistantWorkday" type="text" placeholder="e.g. 19h 30m 15s; blank starts a workday" autocomplete="off">
+          <span>Shared workday remaining if not already tracked (optional)</span>
+          <input id="labAssistantWorkday" type="text" placeholder="e.g. 19h 30m; blank uses tracked workday" autocomplete="off">
         </label>
         <label class="assistant-checkbox">
           <input id="labAssistantRepeat" type="checkbox">

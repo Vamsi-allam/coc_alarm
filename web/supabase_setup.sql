@@ -97,6 +97,18 @@ create table if not exists public.lab_assistants (
   saved_seconds double precision not null default 0
 );
 
+alter table public.lab_assistants
+  add column if not exists helper_type text not null default 'Lab';
+
+-- Preserve existing Lab Assistant records while allowing one Apprentice per account too.
+alter table if exists public.lab_assistant_alerts
+  drop constraint if exists lab_assistant_alerts_account_key_fkey;
+alter table public.lab_assistants drop constraint if exists lab_assistants_pkey;
+alter table public.lab_assistants add primary key (account_key, helper_type);
+alter table public.lab_assistants drop constraint if exists lab_assistants_helper_type_check;
+alter table public.lab_assistants add constraint lab_assistants_helper_type_check
+  check (helper_type in ('Lab', 'Builder') and (helper_type <> 'Builder' or level <= 8));
+
 alter table public.lab_assistants enable row level security;
 grant select on public.lab_assistants to anon;
 drop policy if exists "Public can read lab assistants" on public.lab_assistants;
@@ -132,7 +144,7 @@ begin
       select 1 from public.lab_assistants
       where timer_id = old.id and projected_finish_at > clock_timestamp()
     ) then
-    raise exception 'Stop Lab Assistant tracking before changing or removing this timer.';
+    raise exception 'Stop helper tracking before changing or removing this timer.';
   end if;
   if tg_op = 'DELETE' then return old; end if;
   return new;
@@ -144,8 +156,8 @@ create trigger guard_assigned_lab_timer
   before update or delete on public.builder_timers
   for each row execute function public.guard_assigned_lab_timer();
 
-create or replace function public.assign_lab_assistant(
-  p_timer_id uuid, p_level integer, p_keep_assigned boolean,
+create or replace function public.assign_village_helper(
+  p_helper_type text, p_timer_id uuid, p_level integer, p_keep_assigned boolean,
   p_workday_seconds integer, p_expected_finish timestamptz
 )
 returns jsonb
@@ -168,31 +180,41 @@ declare
   gap_seconds double precision;
   cycles double precision;
   previous_saved double precision := 0;
+  helper_name text;
+  max_level integer;
 begin
-  if p_level is null or p_level < 1 or p_level > 12 or p_keep_assigned is null
+  if p_helper_type is null or p_helper_type not in ('Lab', 'Builder') then
+    raise exception 'Select a Home Village Builder or Lab timer.';
+  end if;
+  helper_name := case when p_helper_type = 'Builder' then 'Builder''s Apprentice' else 'Lab Assistant' end;
+  max_level := case when p_helper_type = 'Builder' then 8 else 12 end;
+  if p_level is null or p_level < 1 or p_level > max_level or p_keep_assigned is null
     or (p_workday_seconds is not null and (p_workday_seconds < 1 or p_workday_seconds > 82800)) then
-    raise exception 'Choose a Lab Assistant level from 1 to 12 and a workday of at most 23 hours.';
+    raise exception 'Choose a % level from 1 to % and a workday of at most 23 hours.', helper_name, max_level;
   end if;
   select * into t from public.builder_timers where id = p_timer_id;
-  if not found or t.village <> 'Home Village' or t.builder_type <> 'Lab' then
-    raise exception 'Select a Home Village Lab timer.';
+  if not found or t.village <> 'Home Village' or t.builder_type <> p_helper_type then
+    raise exception 'Select a Home Village % timer.', p_helper_type;
   end if;
-  insert into public.lab_assistants (account_key)
-  values (lower(btrim(t.account))) on conflict (account_key) do nothing;
-  select * into a from public.lab_assistants where account_key = lower(btrim(t.account)) for update;
+  -- Serialize assignments for both helpers so they agree on the shared workday.
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(lower(btrim(t.account)), 0));
+  insert into public.lab_assistants (account_key, helper_type)
+  values (lower(btrim(t.account)), p_helper_type) on conflict (account_key, helper_type) do nothing;
+  select * into a from public.lab_assistants
+    where account_key = lower(btrim(t.account)) and helper_type = p_helper_type for update;
   select * into t from public.builder_timers where id = p_timer_id for update;
   now_at := clock_timestamp();
-  if not found or t.village <> 'Home Village' or t.builder_type <> 'Lab'
+  if not found or t.village <> 'Home Village' or t.builder_type <> p_helper_type
     or lower(btrim(t.account)) <> a.account_key or t.finish_at is distinct from p_expected_finish then
-    raise exception 'The Lab timer changed. Reload and try again.';
+    raise exception 'The timer changed. Reload and try again.';
   end if;
-  if t.finish_at <= now_at then raise exception 'Start a Lab upgrade before assigning the assistant.'; end if;
+  if t.finish_at <= now_at then raise exception 'Start an upgrade before assigning the helper.'; end if;
   if a.started_at is not null then
     if a.keep_assigned and a.timer_id is not null and a.projected_finish_at > now_at then
-      raise exception 'The Lab Assistant is already kept assigned to an upgrade.';
+      raise exception 'The % is already kept assigned to an upgrade.', helper_name;
     end if;
     if a.timer_id is distinct from p_timer_id and a.projected_finish_at > now_at then
-      raise exception 'The Lab Assistant is assigned to another Lab timer.';
+      raise exception 'The % is assigned to another timer.', helper_name;
     end if;
     last_start := public.lab_assistant_last_start(a, now_at);
     if last_start = a.started_at then
@@ -200,7 +222,7 @@ begin
     else
       ready_at := greatest(last_start + interval '23 hours', least(last_start + interval '1 hour', a.projected_finish_at));
     end if;
-    if now_at < ready_at then raise exception 'The Lab Assistant is still on cooldown.'; end if;
+    if now_at < ready_at then raise exception 'The % is still on cooldown.', helper_name; end if;
   end if;
   if a.timer_id = p_timer_id and coalesce(a.projected_finish_at, a.base_finish_at) = t.finish_at then
     previous_saved := a.saved_seconds;
@@ -208,7 +230,12 @@ begin
       previous_saved := previous_saved + a.level * greatest(0, least(3600, extract(epoch from (least(now_at, a.projected_finish_at) - a.started_at))));
     end if;
   end if;
-  day_end := now_at + coalesce(p_workday_seconds, 82800) * interval '1 second';
+  select max(case when public.lab_assistant_last_start(h, now_at) = h.started_at
+    then h.workday_end_at else public.lab_assistant_last_start(h, now_at) + interval '23 hours' end)
+    into day_end from public.lab_assistants h where h.account_key = a.account_key;
+  if day_end is null or day_end <= now_at then
+    day_end := now_at + coalesce(p_workday_seconds, 82800) * interval '1 second';
+  end if;
   next_session := greatest(day_end, now_at + interval '1 hour');
   remaining := extract(epoch from (t.finish_at - now_at));
   work_seconds := least(3600, remaining / (p_level + 1));
@@ -229,7 +256,7 @@ begin
   v_finish_at := cursor_at + remaining * interval '1 second';
   update public.lab_assistants
     set timer_id = null, projected_finish_at = null, keep_assigned = false
-    where account_key = a.account_key;
+    where account_key = a.account_key and helper_type = p_helper_type;
   update public.builder_timers
     set finish_at = v_finish_at, discord_alert_enabled = true,
         discord_alert_sent_at = null, discord_alert_claimed_at = null
@@ -239,12 +266,12 @@ begin
         workday_end_at = day_end, work_until_at = least(now_at + interval '1 hour', v_finish_at),
         next_session_at = next_session, base_finish_at = p_expected_finish,
         projected_finish_at = v_finish_at, keep_assigned = p_keep_assigned, saved_seconds = previous_saved
-    where account_key = a.account_key returning * into a;
+    where account_key = a.account_key and helper_type = p_helper_type returning * into a;
   return jsonb_build_object('timer', to_jsonb(t), 'assistant', to_jsonb(a));
 end;
 $$;
 
-create or replace function public.stop_lab_assistant(p_timer_id uuid)
+create or replace function public.stop_village_helper(p_helper_type text, p_timer_id uuid)
 returns jsonb
 language plpgsql
 security definer
@@ -260,17 +287,17 @@ declare
   elapsed double precision;
   restored_finish timestamptz;
 begin
-  select * into a from public.lab_assistants where timer_id = p_timer_id for update;
+  select * into a from public.lab_assistants where timer_id = p_timer_id and helper_type = p_helper_type for update;
   if not found or a.projected_finish_at is null or a.projected_finish_at <= now_at then
-    raise exception 'There is no active Lab Assistant assignment for this timer.';
+    raise exception 'There is no active helper assignment for this timer.';
   end if;
   select * into t from public.builder_timers where id = p_timer_id for update;
   now_at := clock_timestamp();
   if a.projected_finish_at <= now_at then
-    raise exception 'There is no active Lab Assistant assignment for this timer.';
+    raise exception 'There is no active helper assignment for this timer.';
   end if;
   if not found or t.finish_at is distinct from a.projected_finish_at then
-    raise exception 'The Lab timer changed. Reload and try again.';
+    raise exception 'The timer changed. Reload and try again.';
   end if;
   end_at := least(now_at, a.projected_finish_at);
   saved := a.level * greatest(0, least(3600, extract(epoch from (end_at - a.started_at))));
@@ -286,7 +313,7 @@ begin
         workday_end_at = case when last_start = a.started_at then a.workday_end_at else last_start + interval '23 hours' end,
         work_until_at = now_at, next_session_at = null, base_finish_at = restored_finish,
         projected_finish_at = null, keep_assigned = false, saved_seconds = saved
-    where account_key = a.account_key returning * into a;
+    where account_key = a.account_key and helper_type = p_helper_type returning * into a;
   update public.builder_timers
     set finish_at = restored_finish, discord_alert_enabled = restored_finish > now_at,
         discord_alert_sent_at = null, discord_alert_claimed_at = null
@@ -295,6 +322,23 @@ begin
 end;
 $$;
 
+create or replace function public.assign_lab_assistant(
+  p_timer_id uuid, p_level integer, p_keep_assigned boolean,
+  p_workday_seconds integer, p_expected_finish timestamptz
+)
+returns jsonb language sql security definer set search_path = ''
+as $$
+  select public.assign_village_helper('Lab', p_timer_id, p_level, p_keep_assigned, p_workday_seconds, p_expected_finish);
+$$;
+
+create or replace function public.stop_lab_assistant(p_timer_id uuid)
+returns jsonb language sql security definer set search_path = ''
+as $$ select public.stop_village_helper('Lab', p_timer_id); $$;
+
+revoke all on function public.assign_village_helper(text, uuid, integer, boolean, integer, timestamptz) from public;
+revoke all on function public.stop_village_helper(text, uuid) from public;
+grant execute on function public.assign_village_helper(text, uuid, integer, boolean, integer, timestamptz) to anon;
+grant execute on function public.stop_village_helper(text, uuid) to anon;
 revoke all on function public.assign_lab_assistant(uuid, integer, boolean, integer, timestamptz) from public;
 revoke all on function public.stop_lab_assistant(uuid) from public;
 grant execute on function public.assign_lab_assistant(uuid, integer, boolean, integer, timestamptz) to anon;
@@ -302,16 +346,34 @@ grant execute on function public.stop_lab_assistant(uuid) to anon;
 
 create table if not exists public.lab_assistant_alerts (
   id uuid primary key default gen_random_uuid(),
-  account_key text not null references public.lab_assistants(account_key) on delete cascade,
+  account_key text not null,
+  helper_type text not null default 'Lab',
   assignment_started_at timestamptz not null,
   event_type text not null check (event_type in ('work_finished', 'available', 'upgrade_finished')),
   due_at timestamptz not null,
   account text not null,
   builder_number integer,
   sent_at timestamptz,
-  claimed_at timestamptz,
-  unique (account_key, assignment_started_at, event_type, due_at)
+  claimed_at timestamptz
 );
+
+alter table public.lab_assistant_alerts add column if not exists helper_type text not null default 'Lab';
+-- Replace the legacy unique constraint regardless of PostgreSQL's truncated generated name.
+do $$
+declare legacy_name text;
+begin
+  for legacy_name in select conname from pg_catalog.pg_constraint
+    where conrelid = 'public.lab_assistant_alerts'::regclass and contype = 'u'
+      and pg_catalog.pg_get_constraintdef(oid) not like '%helper_type%'
+  loop
+    execute format('alter table public.lab_assistant_alerts drop constraint %I', legacy_name);
+  end loop;
+end;
+$$;
+create unique index if not exists lab_assistant_alerts_helper_event_idx
+  on public.lab_assistant_alerts(account_key, helper_type, assignment_started_at, event_type, due_at);
+alter table public.lab_assistant_alerts add constraint lab_assistant_alerts_account_key_fkey
+  foreign key (account_key, helper_type) references public.lab_assistants(account_key, helper_type) on delete cascade;
 
 alter table public.lab_assistant_alerts enable row level security;
 revoke all on public.lab_assistant_alerts from anon, authenticated;
@@ -330,7 +392,7 @@ declare
   last_start timestamptz;
   ready_at timestamptz;
 begin
-  delete from public.lab_assistant_alerts where account_key = new.account_key and sent_at is null;
+  delete from public.lab_assistant_alerts where account_key = new.account_key and helper_type = new.helper_type and sent_at is null;
   if new.started_at is null then return new; end if;
   select * into t from public.builder_timers where id = new.timer_id;
   last_start := public.lab_assistant_last_start(new, coalesce(new.projected_finish_at, new.started_at));
@@ -339,16 +401,16 @@ begin
     else greatest(last_start + interval '23 hours', least(last_start + interval '1 hour', new.projected_finish_at))
   end;
   insert into public.lab_assistant_alerts
-    (account_key, assignment_started_at, event_type, due_at, account, builder_number)
+    (account_key, helper_type, assignment_started_at, event_type, due_at, account, builder_number)
   values
-    (new.account_key, new.started_at, 'available', ready_at, coalesce(t.account, new.account_key), t.builder_number)
+    (new.account_key, new.helper_type, new.started_at, 'available', ready_at, coalesce(t.account, new.account_key), t.builder_number)
   on conflict do nothing;
   if new.projected_finish_at is not null and t.finish_at = new.projected_finish_at then
     insert into public.lab_assistant_alerts
-      (account_key, assignment_started_at, event_type, due_at, account, builder_number)
+      (account_key, helper_type, assignment_started_at, event_type, due_at, account, builder_number)
     values
-      (new.account_key, new.started_at, 'work_finished', new.work_until_at, t.account, t.builder_number),
-      (new.account_key, new.started_at, 'upgrade_finished', new.projected_finish_at, t.account, t.builder_number)
+      (new.account_key, new.helper_type, new.started_at, 'work_finished', new.work_until_at, t.account, t.builder_number),
+      (new.account_key, new.helper_type, new.started_at, 'upgrade_finished', new.projected_finish_at, t.account, t.builder_number)
     on conflict do nothing;
   end if;
   return new;
@@ -372,8 +434,8 @@ as $$
 begin
   -- Repeated sessions are materialized only once they finish, not for the entire upgrade in advance.
   insert into public.lab_assistant_alerts
-    (account_key, assignment_started_at, event_type, due_at, account, builder_number)
-  select a.account_key, a.started_at, 'work_finished',
+    (account_key, helper_type, assignment_started_at, event_type, due_at, account, builder_number)
+  select a.account_key, a.helper_type, a.started_at, 'work_finished',
     least(session_start + interval '1 hour', a.projected_finish_at), t.account, t.builder_number
   from public.lab_assistants a
   join public.builder_timers t on t.id = a.timer_id and t.finish_at = a.projected_finish_at
@@ -388,7 +450,7 @@ begin
   with due as (
     select e.id
     from public.lab_assistant_alerts e
-    join public.lab_assistants a on a.account_key = e.account_key and a.started_at = e.assignment_started_at
+    join public.lab_assistants a on a.account_key = e.account_key and a.helper_type = e.helper_type and a.started_at = e.assignment_started_at
     left join public.builder_timers t on t.id = a.timer_id
     where e.sent_at is null and e.due_at <= now()
       and (e.claimed_at is null or e.claimed_at < now() - interval '5 minutes')

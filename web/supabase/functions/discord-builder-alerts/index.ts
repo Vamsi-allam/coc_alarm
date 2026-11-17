@@ -60,24 +60,30 @@ export default {
     const { data: assistantAlerts, error: assistantClaimError } = await supabase
       .rpc("claim_due_lab_assistant_alerts", { batch_size: 50 });
     if (assistantClaimError) {
-      console.error("Could not claim Lab Assistant alerts.", assistantClaimError.message);
-      return jsonResponse(500, { error: "Could not claim Lab Assistant alerts. Run the updated database setup." });
+      console.error("Could not claim helper alerts.", assistantClaimError.message);
+      return jsonResponse(500, { error: "Could not claim helper alerts. Run the updated database setup." });
     }
 
-    const assistantMessages: Record<string, { title: string; description: string }> = {
-      work_finished: {
-        title: "Lab Assistant Work Finished",
-        description: "Your Lab Assistant has finished this work session.",
-      },
-      available: {
-        title: "Lab Assistant Available",
-        description: "Your Lab Assistant's cooldown has ended. It is ready and not assigned to a future work session.",
-      },
-      upgrade_finished: {
-        title: "Lab Upgrade Complete - Assistant Needs Assignment",
-        description: "The Lab upgrade has finished. Assign the assistant to a new upgrade when its cooldown allows.",
-      },
-    };
+    const helperNames: Record<string, string> = { Lab: "Lab Assistant", Builder: "Builder's Apprentice" };
+    function helperMessage(helperType: string, eventType: string) {
+      const name = helperNames[helperType];
+      if (!name) return undefined;
+      const messages: Record<string, { title: string; description: string }> = {
+        work_finished: {
+          title: `${name} Work Finished`,
+          description: `Your ${name} has finished this work session.`,
+        },
+        available: {
+          title: `${name} Available`,
+          description: `Your ${name}'s cooldown has ended. It is ready and not assigned to a future work session.`,
+        },
+        upgrade_finished: {
+          title: `${helperType} Upgrade Complete - ${name} Needs Assignment`,
+          description: `The ${helperType} upgrade has finished. Assign your ${name} to a new upgrade when its cooldown allows.`,
+        },
+      };
+      return messages[eventType];
+    }
     const deliveries = [
       ...(timers ?? []).map((timer) => ({
         table: "builder_timers" as const,
@@ -95,10 +101,10 @@ export default {
         id: alert.id,
         account: alert.account,
         claimedAt: alert.claimed_at,
-        title: assistantMessages[alert.event_type]?.title,
-        description: assistantMessages[alert.event_type]?.description,
+        title: helperMessage(alert.helper_type, alert.event_type)?.title,
+        description: helperMessage(alert.helper_type, alert.event_type)?.description,
         village: "Home Village",
-        upgrade: alert.builder_number ? `Lab #${alert.builder_number}` : "Lab Assistant",
+        upgrade: alert.builder_number ? `${alert.helper_type} #${alert.builder_number}` : helperNames[alert.helper_type],
         timestamp: alert.due_at,
       })),
     ];
@@ -118,7 +124,7 @@ export default {
       };
       if (!delivery.title || !delivery.description) {
         failed += 1;
-        console.error("Unrecognized Lab Assistant alert event.");
+        console.error("Unrecognized helper alert event.");
         await releaseClaim();
         continue;
       }

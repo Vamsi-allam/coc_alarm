@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { HOUR, WORKDAY, forecastLabAssistant, savedLabTime, remainingLabTime, labAssistantAvailability } from "./lab-assistant.js";
+import { HOUR, WORKDAY, HELPER_TYPES, helperKey, sharedWorkdayEnd, forecastLabAssistant, savedLabTime, remainingLabTime, labAssistantAvailability } from "./lab-assistant.js";
 
 const STORAGE_KEY = "builder-desk-records-v1";
 const ACCOUNT_ORDER_STORAGE_KEY = "builder-desk-account-order-v1";
@@ -54,11 +54,15 @@ const elements = {
   removeButton: document.querySelector("#removeButton"),
   editorStatus: document.querySelector("#editorStatus"),
   labAssistantPanel: document.querySelector("#labAssistantPanel"),
+  labAssistantHeading: document.querySelector("#labAssistantHeading"),
   labAssistantState: document.querySelector("#labAssistantState"),
   labAssistantSaved: document.querySelector("#labAssistantSaved"),
   labAssistantSavedValue: document.querySelector("#labAssistantSavedValue"),
   labAssistantDialog: document.querySelector("#labAssistantDialog"),
   labAssistantDialogTarget: document.querySelector("#labAssistantDialogTarget"),
+  labAssistantDialogTitle: document.querySelector("#labAssistantDialogTitle"),
+  helperDialogEyebrow: document.querySelector("#helperDialogEyebrow"),
+  helperLevelLabel: document.querySelector("#helperLevelLabel"),
   closeLabAssistantDialog: document.querySelector("#closeLabAssistantDialog"),
   labAssistantForm: document.querySelector("#labAssistantForm"),
   labAssistantStatus: document.querySelector("#labAssistantStatus"),
@@ -119,7 +123,7 @@ function loadBuilders() {
 
 function saveBuilders() {
   if (!labAssistantsReady) {
-    setAddStatus("Lab Assistant data could not be loaded; browser data was not overwritten.", true);
+    setAddStatus("Helper data could not be loaded; browser data was not overwritten.", true);
     return false;
   }
   try {
@@ -132,9 +136,11 @@ function saveBuilders() {
 }
 
 function fromSupabaseAssistant(row) {
+  if (!HELPER_TYPES[row.helper_type]) throw new Error("Run the updated Supabase setup to load helpers.");
   const timestamp = (value) => value === null ? null : new Date(value).getTime();
   return {
     accountKey: row.account_key,
+    helperType: row.helper_type,
     level: row.level,
     timerId: row.timer_id,
     startedAt: timestamp(row.started_at),
@@ -151,8 +157,12 @@ function fromSupabaseAssistant(row) {
 function loadLocalAssistants() {
   const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
   if (Array.isArray(stored)) return new Map();
-  if (!stored || !Array.isArray(stored.labAssistants)) throw new Error("Saved Lab Assistant data is invalid.");
-  return new Map(stored.labAssistants.map((assistant) => [assistant.accountKey, assistant]));
+  if (!stored || !Array.isArray(stored.labAssistants)) throw new Error("Saved helper data is invalid.");
+  return new Map(stored.labAssistants.map((assistant) => {
+    const helperType = assistant.helperType ?? "Lab";
+    if (!HELPER_TYPES[helperType]) throw new Error("Saved helper type is invalid.");
+    return [helperKey(assistant.accountKey, helperType), { ...assistant, helperType }];
+  }));
 }
 
 async function loadSupabaseAssistants() {
@@ -160,25 +170,35 @@ async function loadSupabaseAssistants() {
   if (error) throw error;
   return new Map(data.map((row) => {
     const assistant = fromSupabaseAssistant(row);
-    return [assistant.accountKey, assistant];
+    return [helperKey(assistant.accountKey, assistant.helperType), assistant];
   }));
 }
 
+function helperForRow(row) {
+  return row?.village === HOME_VILLAGE ? HELPER_TYPES[row.builderType || BUILDER_TYPE] : null;
+}
+
+function assistantForRow(row) {
+  return helperForRow(row)
+    ? labAssistants.get(helperKey(normalize(row.account), row.builderType || BUILDER_TYPE))
+    : null;
+}
+
 function hasTrackedLabAssistant(row, now = Date.now()) {
-  const assistant = labAssistants.get(normalize(row.account));
+  const assistant = assistantForRow(row);
   return assistant?.timerId === row.id && assistant.projectedFinish > now;
 }
 
 function savedForLab(row, now) {
-  const assistant = labAssistants.get(normalize(row.account));
-  if (row.village !== HOME_VILLAGE || row.builderType !== "Lab" || assistant?.timerId !== row.id) return null;
+  const assistant = assistantForRow(row);
+  if (assistant?.timerId !== row.id) return null;
   const finish = assistant.projectedFinish ?? assistant.baseFinish;
   return finish != null && new Date(row.finishAt).getTime() === Math.floor(finish)
     ? savedLabTime(assistant, now) : null;
 }
 
 function remainingForRow(row, now) {
-  const assistant = labAssistants.get(normalize(row.account));
+  const assistant = assistantForRow(row);
   if (assistant?.projectedFinish != null && savedForLab(row, now) !== null) {
     return remainingLabTime(assistant, now);
   }
@@ -186,9 +206,8 @@ function remainingForRow(row, now) {
 }
 
 function canAssignLabAssistant(row, now) {
-  if (!labAssistantsReady || labAssistantSaving || row.village !== HOME_VILLAGE
-      || row.builderType !== "Lab" || finishIsDone(row, now)) return false;
-  const assistant = labAssistants.get(normalize(row.account));
+  if (!labAssistantsReady || labAssistantSaving || !helperForRow(row) || finishIsDone(row, now)) return false;
+  const assistant = assistantForRow(row);
   if (assistant?.timerId !== row.id && assistant?.projectedFinish > now) return false;
   return labAssistantAvailability(assistant, now).available;
 }
@@ -677,8 +696,9 @@ function renderRows() {
       assignButton.type = "button";
       assignButton.className = "row-action assistant-row-action";
       assignButton.dataset.action = "assign";
-      assignButton.textContent = "Assign assistant";
-      assignButton.setAttribute("aria-label", `Assign Lab Assistant to ${row.account}, ${builderLabel(row)}`);
+      const helper = helperForRow(row);
+      assignButton.textContent = helper.action;
+      assignButton.setAttribute("aria-label", `Assign ${helper.name} to ${row.account}, ${builderLabel(row)}`);
       assignButton.addEventListener("click", (event) => {
         event.stopPropagation();
         openLabAssistantDialog(row.id);
@@ -758,23 +778,24 @@ function renderEditor() {
 }
 
 function renderLabAssistant(row, isDone) {
-  const isHomeLab = row.village === HOME_VILLAGE && row.builderType === "Lab";
-  elements.labAssistantPanel.hidden = !isHomeLab;
-  if (!isHomeLab) return;
-  const assistant = labAssistants.get(normalize(row.account));
+  const helper = helperForRow(row);
+  elements.labAssistantPanel.hidden = !helper;
+  if (!helper) return;
+  elements.labAssistantHeading.textContent = helper.name;
+  const assistant = assistantForRow(row);
   const now = Date.now();
   const availability = labAssistantAvailability(assistant, now);
   const activePlan = assistant?.timerId && assistant.projectedFinish > now;
   const ownPlan = activePlan && assistant.timerId === row.id;
   const reserved = activePlan && assistant.repeat;
   elements.labAssistantState.textContent = !labAssistantsReady
-    ? "Lab Assistant data is unavailable. Check the Supabase setup and reload."
+    ? "Helper data is unavailable. Check the Supabase setup and reload."
     : activePlan && !ownPlan
-      ? "Assistant is assigned to another Lab timer."
+      ? `${helper.name} is assigned to another timer.`
     : reserved
       ? `Kept assigned. Next workday in ${formatRemaining(availability.availableAt, now)}.`
       : availability.available
-        ? "Assistant ready to assign."
+        ? `${helper.name} ready to assign.`
         : `Next available in ${formatRemaining(availability.availableAt, now)}.`;
   elements.stopLabAssistantButton.hidden = !ownPlan;
   elements.stopLabAssistantButton.disabled = labAssistantSaving;
@@ -784,7 +805,13 @@ function openLabAssistantDialog(id) {
   const row = builders.find((builder) => builder.id === id);
   if (!row || !canAssignLabAssistant(row, Date.now())) return;
   selectBuilder(id);
-  const assistant = labAssistants.get(normalize(row.account));
+  const helper = helperForRow(row);
+  const assistant = assistantForRow(row);
+  elements.labAssistantDialogTitle.textContent = `Assign ${helper.name}`;
+  elements.helperDialogEyebrow.textContent = `HOME VILLAGE ${row.builderType || BUILDER_TYPE}`.toUpperCase();
+  elements.helperLevelLabel.textContent = `${helper.name} level (1-${helper.maxLevel})`;
+  elements.labAssistantLevel.max = String(helper.maxLevel);
+  elements.assignLabAssistantButton.textContent = helper.action;
   elements.labAssistantDialogTarget.textContent = `${row.account} — ${builderLabel(row)}`;
   elements.labAssistantLevel.value = String(assistant?.level ?? 1);
   elements.labAssistantWorkday.value = "";
@@ -797,21 +824,23 @@ function openLabAssistantDialog(id) {
 async function assignLabAssistant(event) {
   event.preventDefault();
   const row = builders.find((builder) => builder.id === selectedId);
-  if (!row || row.village !== HOME_VILLAGE || row.builderType !== "Lab") {
-    elements.labAssistantStatus.textContent = "Select a Home Village Lab timer.";
+  const helper = helperForRow(row);
+  if (!helper) {
+    elements.labAssistantStatus.textContent = "Select a Home Village Builder or Lab timer.";
     elements.labAssistantStatus.classList.add("error");
     return;
   }
   const level = Number(elements.labAssistantLevel.value);
   const repeat = elements.labAssistantRepeat.checked;
   try {
-    if (!labAssistantsReady) throw new Error("Lab Assistant data is unavailable. Check the setup and reload.");
-    if (!Number.isInteger(level) || level < 1 || level > 12) throw new Error("Choose a Lab Assistant level from 1 to 12.");
+    if (!labAssistantsReady) throw new Error("Helper data is unavailable. Check the setup and reload.");
+    if (!Number.isInteger(level) || level < 1 || level > helper.maxLevel) throw new Error(`Choose a ${helper.name} level from 1 to ${helper.maxLevel}.`);
     const now = Date.now();
-    const current = labAssistants.get(normalize(row.account));
-    if (finishIsDone(row, now)) throw new Error("Start a Lab upgrade before assigning the assistant.");
-    if (current?.timerId !== row.id && current?.projectedFinish > now) throw new Error("The Lab Assistant is assigned to another Lab timer.");
-    if (!labAssistantAvailability(current, now).available) throw new Error("The Lab Assistant is not available yet.");
+    const current = assistantForRow(row);
+    const key = helperKey(normalize(row.account), row.builderType || BUILDER_TYPE);
+    if (finishIsDone(row, now)) throw new Error("Start an upgrade before assigning the helper.");
+    if (current?.timerId !== row.id && current?.projectedFinish > now) throw new Error(`The ${helper.name} is assigned to another timer.`);
+    if (!labAssistantAvailability(current, now).available) throw new Error(`The ${helper.name} is not available yet.`);
     const workdayText = elements.labAssistantWorkday.value.trim();
     const workdaySeconds = workdayText ? parseDuration(workdayText) : null;
     if (workdaySeconds !== null && (workdaySeconds < 1 || workdaySeconds > WORKDAY / 1000)) {
@@ -821,7 +850,8 @@ async function assignLabAssistant(event) {
     elements.assignLabAssistantButton.disabled = true;
     render();
     if (supabase) {
-      const { data, error } = await supabase.rpc("assign_lab_assistant", {
+      const { data, error } = await supabase.rpc("assign_village_helper", {
+        p_helper_type: row.builderType || BUILDER_TYPE,
         p_timer_id: row.id,
         p_level: level,
         p_keep_assigned: repeat,
@@ -832,13 +862,15 @@ async function assignLabAssistant(event) {
       const index = builders.findIndex((builder) => builder.id === row.id);
       if (index >= 0) builders[index] = fromSupabaseRow(data.timer);
       const assistant = fromSupabaseAssistant(data.assistant);
-      labAssistants.set(assistant.accountKey, assistant);
+      labAssistants.set(key, assistant);
     } else {
       const baseFinish = new Date(row.finishAt).getTime();
-      const workdayEnd = now + (workdaySeconds ?? WORKDAY / 1000) * 1000;
-      const forecast = forecastLabAssistant(now, baseFinish, workdayEnd, level, repeat);
+      const workdayEnd = sharedWorkdayEnd(labAssistants.values(), normalize(row.account), now)
+        ?? now + (workdaySeconds ?? WORKDAY / 1000) * 1000;
+      const forecast = forecastLabAssistant(now, baseFinish, workdayEnd, level, repeat, row.builderType || BUILDER_TYPE);
       const assistant = {
         accountKey: normalize(row.account),
+        helperType: row.builderType || BUILDER_TYPE,
         level,
         timerId: row.id,
         startedAt: now,
@@ -856,18 +888,18 @@ async function assignLabAssistant(event) {
       row.discordAlertEnabled = true;
       row.discordAlertSentAt = null;
       row.discordAlertClaimedAt = null;
-      labAssistants.set(assistant.accountKey, assistant);
+      labAssistants.set(key, assistant);
       if (!saveBuilders()) {
         Object.assign(row, previousRow);
-        if (previousAssistant) labAssistants.set(assistant.accountKey, previousAssistant);
-        else labAssistants.delete(assistant.accountKey);
-        throw new Error("Could not save the Lab Assistant assignment in this browser.");
+        if (previousAssistant) labAssistants.set(key, previousAssistant);
+        else labAssistants.delete(key);
+        throw new Error("Could not save the helper assignment in this browser.");
       }
     }
     if (supabase) saveBuilders();
     elements.labAssistantWorkday.value = "";
     elements.labAssistantDialog.close();
-    setEditorStatus("Assistant assignment tracked. Assign it in the game too.");
+    setEditorStatus(`${helper.name} assignment tracked. Assign it in the game too.`);
   } catch (error) {
     elements.labAssistantStatus.textContent = error.message;
     elements.labAssistantStatus.classList.add("error");
@@ -881,7 +913,7 @@ async function assignLabAssistant(event) {
 async function stopLabAssistant() {
   const row = builders.find((builder) => builder.id === selectedId);
   if (!row || !hasTrackedLabAssistant(row)) {
-    setEditorStatus("There is no active assignment on this Lab timer.", true);
+    setEditorStatus("There is no active helper assignment on this timer.", true);
     return;
   }
   if (!window.confirm("Stop tracking this assignment? Future projected boosts will be removed, but time already saved is kept. If the assistant continues working in the game, the estimate will not match.")) return;
@@ -889,15 +921,17 @@ async function stopLabAssistant() {
   render();
   try {
     if (supabase) {
-      const { data, error } = await supabase.rpc("stop_lab_assistant", { p_timer_id: row.id });
+      const { data, error } = await supabase.rpc("stop_village_helper", {
+        p_helper_type: row.builderType || BUILDER_TYPE, p_timer_id: row.id,
+      });
       if (error) throw error;
       const index = builders.findIndex((builder) => builder.id === row.id);
       if (index >= 0) builders[index] = fromSupabaseRow(data.timer);
       const assistant = fromSupabaseAssistant(data.assistant);
-      labAssistants.set(assistant.accountKey, assistant);
+      labAssistants.set(helperKey(assistant.accountKey, assistant.helperType), assistant);
     } else {
       const now = Date.now();
-      const key = normalize(row.account);
+      const key = helperKey(normalize(row.account), row.builderType || BUILDER_TYPE);
       const assistant = labAssistants.get(key);
       const saved = savedLabTime(assistant, now);
       const availability = labAssistantAvailability(assistant, now);
@@ -908,7 +942,8 @@ async function stopLabAssistant() {
       row.discordAlertSentAt = null;
       row.discordAlertClaimedAt = null;
       labAssistants.set(key, {
-        accountKey: key,
+        accountKey: normalize(row.account),
+        helperType: assistant.helperType,
         level: assistant.level,
         timerId: row.id,
         startedAt: availability.startedAt,
@@ -927,7 +962,7 @@ async function stopLabAssistant() {
       }
     }
     if (supabase) saveBuilders();
-    setEditorStatus("Assistant tracking stopped. Time already saved was kept.");
+    setEditorStatus("Helper tracking stopped. Time already saved was kept.");
   } catch (error) {
     setEditorStatus(error.message, true);
   } finally {
@@ -954,7 +989,7 @@ function selectBuilder(id) {
 async function addBuilders(event) {
   event.preventDefault();
   if (!supabase && !labAssistantsReady) {
-    setAddStatus("Lab Assistant data could not be loaded; timers cannot be saved.", true);
+    setAddStatus("Helper data could not be loaded; timers cannot be saved.", true);
     return;
   }
   const enteredAccount = elements.addAccountSelect.value || elements.accountInput.value.trim();
@@ -1045,7 +1080,7 @@ function parseDuration(text) {
 
 async function updateSelectedTime(markDone = false) {
   if (!supabase && !labAssistantsReady) {
-    setEditorStatus("Lab Assistant data could not be loaded; timers cannot be saved.", true);
+    setEditorStatus("Helper data could not be loaded; timers cannot be saved.", true);
     return;
   }
   const row = builders.find((builder) => builder.id === selectedId);
@@ -1054,7 +1089,7 @@ async function updateSelectedTime(markDone = false) {
     return;
   }
   if (hasTrackedLabAssistant(row)) {
-    setEditorStatus("Stop Lab Assistant tracking before changing this timer.", true);
+    setEditorStatus("Stop helper tracking before changing this timer.", true);
     return;
   }
   try {
@@ -1089,7 +1124,7 @@ async function updateSelectedTime(markDone = false) {
 
 async function removeSelected() {
   if (!supabase && !labAssistantsReady) {
-    setEditorStatus("Lab Assistant data could not be loaded; timers cannot be saved.", true);
+    setEditorStatus("Helper data could not be loaded; timers cannot be saved.", true);
     return;
   }
   const index = builders.findIndex((builder) => builder.id === selectedId);
@@ -1099,7 +1134,7 @@ async function removeSelected() {
   }
   const removed = builders[index];
   if (hasTrackedLabAssistant(removed)) {
-    setEditorStatus("Stop Lab Assistant tracking before removing this timer.", true);
+    setEditorStatus("Stop helper tracking before removing this timer.", true);
     return;
   }
   if (supabase) {
@@ -1178,7 +1213,7 @@ function parseCsvFinish(value) {
 
 async function importCsv(file) {
   try {
-    if (!supabase && !labAssistantsReady) throw new Error("Lab Assistant data could not be loaded; timers cannot be saved.");
+    if (!supabase && !labAssistantsReady) throw new Error("Helper data could not be loaded; timers cannot be saved.");
     const text = await file.text();
     if (!text.trim()) throw new Error("CSV file is empty.");
     const rows = parseCsv(text);
@@ -1218,7 +1253,7 @@ async function importCsv(file) {
       const existing = byKey.get(key);
       if (existing) {
         if (hasTrackedLabAssistant(existing) && new Date(existing.finishAt).getTime() !== new Date(finishAt).getTime()) {
-          throw new Error(`Stop Lab Assistant tracking before importing changes to ${existing.account}'s Lab timer.`);
+          throw new Error(`Stop helper tracking before importing changes to ${existing.account}'s ${builderLabel(existing)}.`);
         }
         existing.finishAt = row.finishAt;
         existing.discordAlertEnabled = row.discordAlertEnabled;
@@ -1366,7 +1401,7 @@ async function initialize() {
       labAssistants = loadLocalAssistants();
     } catch (error) {
       labAssistantsReady = false;
-      setAddStatus(`Could not load Lab Assistant data: ${error.message}`, true);
+      setAddStatus(`Could not load helper data: ${error.message}`, true);
     }
     refreshAccountFilter();
     refreshBuilderTypeOptions();
@@ -1380,7 +1415,7 @@ async function initialize() {
     if (!remoteBuilders.length && builders.length) {
       const localAssistants = loadLocalAssistants();
       if ([...localAssistants.values()].some((assistant) => assistant.timerId && assistant.projectedFinish > Date.now())) {
-        throw new Error("Stop active local Lab Assistant tracking before migrating timers to Supabase.");
+        throw new Error("Stop active local helper tracking before migrating timers to Supabase.");
       }
       await upsertSupabaseBuilders(builders);
       remoteBuilders = await fetchSupabaseBuilders();
@@ -1392,7 +1427,7 @@ async function initialize() {
       labAssistants = await loadSupabaseAssistants();
       labAssistantsReady = true;
     } catch (error) {
-      setAddStatus(`Could not load Lab Assistant data: ${error.message}. Run the Supabase setup and reload.`, true);
+      setAddStatus(`Could not load helper data: ${error.message}. Run the Supabase setup and reload.`, true);
     }
     if (labAssistantsReady) saveBuilders();
     try {

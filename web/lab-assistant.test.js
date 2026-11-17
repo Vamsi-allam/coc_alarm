@@ -1,6 +1,33 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HOUR, WORKDAY, forecastLabAssistant, savedLabTime, remainingLabTime, labAssistantAvailability } from "./lab-assistant.js";
+import { HOUR, WORKDAY, helperKey, sharedWorkdayEnd, forecastLabAssistant, savedLabTime, remainingLabTime, labAssistantAvailability } from "./lab-assistant.js";
+
+test("the Apprentice supports levels 1-8 and applies its bonus gradually", () => {
+  const forecast = forecastLabAssistant(0, 20 * HOUR, WORKDAY, 8, false, "Builder");
+  const plan = { timerId: "builder-1", startedAt: 0, baseFinish: 20 * HOUR, level: 8, repeat: false, ...forecast };
+  assert.equal(remainingLabTime(plan, 1000), 20 * HOUR - 9000);
+  assert.equal(savedLabTime(plan, HOUR), 8 * HOUR);
+  assert.equal(forecast.projectedFinish, 12 * HOUR);
+  assert.throws(() => forecastLabAssistant(0, 20 * HOUR, WORKDAY, 9, false, "Builder"));
+  assert.doesNotThrow(() => forecastLabAssistant(0, 20 * HOUR, WORKDAY, 12, false, "Lab"));
+});
+
+test("the two helpers use independent state keys even for accounts containing separators", () => {
+  assert.notEqual(helperKey("account", "Lab"), helperKey("account", "Builder"));
+  assert.equal(helperKey("account"), helperKey("account", "Lab"));
+  assert.notEqual(helperKey("account|Builder", "Lab"), helperKey("account", "Builder"));
+});
+
+test("helpers reuse their account's shared workday including repeated sessions", () => {
+  const plan = {
+    accountKey: "account", timerId: "lab-1", startedAt: 0, workdayEnd: WORKDAY,
+    workUntil: HOUR, nextSession: WORKDAY, projectedFinish: 60 * HOUR, repeat: true,
+  };
+  assert.equal(sharedWorkdayEnd([plan], "account", 3 * HOUR), WORKDAY);
+  assert.equal(sharedWorkdayEnd([plan], "account", 24 * HOUR), 46 * HOUR);
+  assert.equal(sharedWorkdayEnd([plan], "different", 3 * HOUR), null);
+  assert.equal(sharedWorkdayEnd([{ ...plan, repeat: false }], "account", 24 * HOUR), null);
+});
 
 test("the countdown applies a level-one bonus gradually for one hour", () => {
   const forecast = forecastLabAssistant(0, 10 * HOUR, WORKDAY, 1, false);
