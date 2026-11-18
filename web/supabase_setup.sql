@@ -603,6 +603,7 @@ as $$
 declare
   account_key_value text := lower(btrim(p_account));
   at_time timestamptz;
+  boost_end timestamptz;
   c public.clock_towers%rowtype;
   timers jsonb;
 begin
@@ -618,8 +619,9 @@ begin
   end if;
   select * into c from public.clock_towers where account_key = account_key_value for update;
   if c.available_at > at_time then raise exception 'The Clock Tower is still on cooldown.'; end if;
+  boost_end := at_time + make_interval(secs => p_duration_seconds);
   insert into public.clock_towers (account_key, started_at, ends_at, available_at)
-    values (account_key_value, at_time, at_time + make_interval(secs => p_duration_seconds), at_time + interval '22 hours')
+    values (account_key_value, at_time, boost_end, boost_end + interval '22 hours')
     on conflict (account_key) do update set started_at = excluded.started_at,
       ends_at = excluded.ends_at, available_at = excluded.available_at
     returning * into c;
@@ -636,6 +638,39 @@ end;
 $$;
 revoke all on function public.activate_clock_tower(text, integer) from public, anon, authenticated;
 grant execute on function public.activate_clock_tower(text, integer) to anon;
+
+-- Move saved cooldowns and their unsent alerts together. Sent alerts are not repeated.
+with rescheduled as (
+  update public.clock_towers
+  set available_at = ends_at + interval '22 hours'
+  where available_at = started_at + interval '22 hours'
+  returning account_key, started_at + interval '22 hours' as previous_due_at, available_at
+)
+update public.clock_tower_alerts a
+set due_at = r.available_at
+from rescheduled r
+where lower(btrim(a.account)) = r.account_key
+  and a.due_at = r.previous_due_at
+  and a.sent_at is null;
+
+create extension if not exists pg_cron;
+
+-- Finished upgrades drop their saved Clock Tower time once they complete.
+select cron.unschedule(jobid)
+from cron.job
+where jobname = 'clear-finished-clock-savings';
+
+select cron.schedule(
+  'clear-finished-clock-savings',
+  '* * * * *',
+  $$
+    update public.builder_timers
+    set clock_started_at = null, clock_ends_at = null,
+        clock_base_finish_at = null, clock_saved_seconds = 0
+    where finish_at <= now()
+      and (clock_started_at is not null or clock_saved_seconds <> 0);
+  $$
+);
 
 create or replace function public.claim_due_clock_tower_alerts(batch_size integer default 50)
 returns setof public.clock_tower_alerts

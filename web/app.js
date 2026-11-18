@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { HOUR, WORKDAY, HELPER_TYPES, helperKey, sharedWorkdayEnd, forecastLabAssistant, savedLabTime, remainingLabTime, labAssistantAvailability } from "./lab-assistant.js";
-import { CLOCK_COOLDOWN, clockEligible, applyClock, clockSaved, clockRemaining } from "./clock-tower.js";
+import { CLOCK_COOLDOWN, clockReadyAt, clockEligible, applyClock, clockSaved, clockRemaining } from "./clock-tower.js";
 
 const STORAGE_KEY = "builder-desk-records-v1";
 const ACCOUNT_ORDER_STORAGE_KEY = "builder-desk-account-order-v1";
@@ -624,8 +624,8 @@ function makeBuilderKey(row) {
   return [normalize(row.account), normalize(row.village), normalize(row.builderType || BUILDER_TYPE), normalize(row.builder)].join("|");
 }
 
-function formatRemaining(finishAt, now = Date.now()) {
-  const seconds = Math.max(0, Math.floor((new Date(finishAt).getTime() - now) / 1000));
+function formatRemaining(finishAt, now = Date.now(), round = Math.floor) {
+  const seconds = Math.max(0, round((new Date(finishAt).getTime() - now) / 1000));
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -765,7 +765,7 @@ function renderAccountSummary() {
       button.disabled = !clockTowersReady || clockTowerSaving || boost?.availableAt > now;
       button.textContent = !clockTowersReady ? "Clock Tower unavailable"
         : boost?.endsAt > now ? `Clock Tower 10x: ${formatRemaining(boost.endsAt, now)}`
-          : boost?.availableAt > now ? `Clock Tower ready in ${formatRemaining(boost.availableAt, now)}`
+          : boost?.availableAt > now ? `Clock Tower ready in ${formatRemaining(boost.availableAt, now, Math.ceil)}`
             : "Clock Tower boost";
       button.setAttribute("aria-label", `${account.name}: ${button.textContent}`);
       item.append(button);
@@ -1135,7 +1135,9 @@ function loadLocalClocks() {
     || ![boost.startedAt, boost.endsAt, boost.availableAt].every(Number.isFinite))) {
     throw new Error("Saved Clock Tower data is invalid.");
   }
-  return new Map(clocks.map((boost) => [boost.accountKey, boost]));
+  return new Map(clocks.map((boost) => [
+    boost.accountKey, { ...boost, availableAt: clockReadyAt(boost.endsAt) },
+  ]));
 }
 
 function openClockTowerDialog(account) {
@@ -1173,7 +1175,8 @@ async function activateClockTower(event) {
       builders = builders.map((row) => updated.get(row.id) ?? row);
       saveBuilders();
     } else {
-      const boost = { accountKey: key, startedAt: now, endsAt: now + seconds * 1000, availableAt: now + CLOCK_COOLDOWN };
+      const endsAt = now + seconds * 1000;
+      const boost = { accountKey: key, startedAt: now, endsAt, availableAt: clockReadyAt(endsAt) };
       const previousRows = builders;
       const previousBoost = clockTowers.get(key);
       builders = builders.map((row) => normalize(row.account) === key && clockEligible(row) && !finishIsDone(row, now)
