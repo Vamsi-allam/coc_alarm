@@ -98,6 +98,12 @@ const elements = {
   clockTowerStatus: document.querySelector("#clockTowerStatus"),
   activateClockTowerButton: document.querySelector("#activateClockTowerButton"),
   closeClockTowerDialog: document.querySelector("#closeClockTowerDialog"),
+  removeAccountDialog: document.querySelector("#removeAccountDialog"),
+  removeAccountTarget: document.querySelector("#removeAccountTarget"),
+  removeAccountForm: document.querySelector("#removeAccountForm"),
+  confirmRemoveAccountButton: document.querySelector("#confirmRemoveAccountButton"),
+  cancelRemoveAccountButton: document.querySelector("#cancelRemoveAccountButton"),
+  removeAccountStatus: document.querySelector("#removeAccountStatus"),
 };
 
 let builders = loadBuilders();
@@ -115,6 +121,8 @@ let selectedId = null;
 let remoteReady = !supabase;
 let webhookAdminPassword = "";
 let webhookAccounts = [];
+let accountToRemove = null;
+let accountRemoving = false;
 
 function makeId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -501,6 +509,95 @@ function setAccountOrderStatus(message, isError = false) {
   elements.accountOrderStatus.classList.toggle("error", isError);
 }
 
+function openRemoveAccountDialog(account) {
+  if (accountRemoving) return;
+  accountToRemove = account;
+  elements.removeAccountTarget.textContent = `Remove ${account} from Builder Desk?`;
+  elements.removeAccountStatus.textContent = "";
+  elements.removeAccountStatus.classList.remove("error");
+  elements.removeAccountDialog.showModal();
+}
+
+async function removeAccount(event) {
+  event.preventDefault();
+  if (accountRemoving) return;
+  try {
+    if (!accountToRemove || !remoteReady || !labAssistantsReady || !clockTowersReady || !accountOrderReady) {
+      throw new Error("Account data is unavailable. Reload before removing an account.");
+    }
+    if (labAssistantSaving || clockTowerSaving || accountOrderSaving) {
+      throw new Error("Wait for the current change to finish, then try again.");
+    }
+    const account = accountToRemove;
+    const key = normalize(account);
+    accountRemoving = true;
+    elements.confirmRemoveAccountButton.disabled = true;
+    elements.cancelRemoveAccountButton.disabled = true;
+    elements.removeAccountStatus.textContent = "Removing account...";
+    const nextBuilders = builders.filter((row) => normalize(row.account) !== key);
+    const nextAssistants = new Map([...labAssistants].filter(([, helper]) => normalize(helper.accountKey) !== key));
+    const nextClocks = new Map([...clockTowers].filter(([, boost]) => normalize(boost.accountKey) !== key));
+    const nextOrder = accountOrder.filter((entry) => normalize(entry) !== key);
+    if (supabase) {
+      const { error } = await supabase.rpc("remove_builder_account", { p_account: account });
+      if (error) throw error;
+    }
+    let cacheWarning = "";
+    try {
+      const previousOrder = localStorage.getItem(ACCOUNT_ORDER_STORAGE_KEY);
+      localStorage.setItem(ACCOUNT_ORDER_STORAGE_KEY, JSON.stringify(nextOrder));
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          builders: nextBuilders, labAssistants: [...nextAssistants.values()], clockTowers: [...nextClocks.values()],
+        }));
+      } catch (error) {
+        if (!supabase) {
+          try {
+            if (previousOrder === null) localStorage.removeItem(ACCOUNT_ORDER_STORAGE_KEY);
+            else localStorage.setItem(ACCOUNT_ORDER_STORAGE_KEY, previousOrder);
+          } catch (rollbackError) {
+            throw new Error(`Account data was not removed, but the account order could not be restored: ${rollbackError.message}`);
+          }
+        }
+        throw error;
+      }
+    } catch (error) {
+      if (!supabase) throw new Error(`Could not save account removal in this browser: ${error.message}`);
+      cacheWarning = ` Account removed from Supabase, but the browser cache could not be updated: ${error.message}`;
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(ACCOUNT_ORDER_STORAGE_KEY);
+      } catch (clearError) {
+        cacheWarning += ` Clear this site's browser data before reloading: ${clearError.message}`;
+      }
+    }
+    builders = nextBuilders;
+    labAssistants = nextAssistants;
+    clockTowers = nextClocks;
+    accountOrder = nextOrder;
+    if (!builders.some((row) => row.id === selectedId)) selectedId = null;
+    if (normalize(clockTowerAccount) === key) clockTowerAccount = null;
+    webhookAccounts = webhookAccounts.filter((entry) => normalize(entry.account) !== key);
+    elements.webhookUrlInput.value = "";
+    refreshWebhookAccountOptions();
+    refreshAccountFilter();
+    if (normalize(elements.accountInput.value) === key) elements.accountInput.value = "";
+    setAddStatus("");
+    setEditorStatus("");
+    setAccountOrderStatus(`Removed ${account} and all its tracked data.${cacheWarning}`, Boolean(cacheWarning));
+    elements.removeAccountDialog.close();
+    accountToRemove = null;
+  } catch (error) {
+    elements.removeAccountStatus.textContent = `Could not remove account: ${error.message}`;
+    elements.removeAccountStatus.classList.add("error");
+  } finally {
+    accountRemoving = false;
+    elements.confirmRemoveAccountButton.disabled = false;
+    elements.cancelRemoveAccountButton.disabled = false;
+    render();
+  }
+}
+
 function currentVillage() {
   return document.querySelector('input[name="village"]:checked')?.value || HOME_VILLAGE;
 }
@@ -673,6 +770,16 @@ function renderAccountSummary() {
       button.setAttribute("aria-label", `${account.name}: ${button.textContent}`);
       item.append(button);
     }
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "account-remove-button";
+    removeButton.dataset.account = account.value;
+    removeButton.dataset.action = "remove-account";
+    removeButton.textContent = "Remove account";
+    removeButton.setAttribute("aria-label", `Remove account ${account.name}`);
+    removeButton.disabled = accountRemoving || !remoteReady || !labAssistantsReady || !clockTowersReady
+      || !accountOrderReady || labAssistantSaving || clockTowerSaving || accountOrderSaving;
+    item.append(removeButton);
     cards.append(item);
   }
   const nextCards = [...cards.children];
@@ -1454,6 +1561,11 @@ elements.accountFilter.addEventListener("change", () => {
   render();
 });
 elements.accountSummary.addEventListener("click", (event) => {
+  const removeButton = event.target.closest('[data-action="remove-account"]');
+  if (removeButton) {
+    openRemoveAccountDialog(removeButton.dataset.account);
+    return;
+  }
   const clockButton = event.target.closest('[data-action="clock-tower"]');
   if (clockButton) {
     openClockTowerDialog(clockButton.dataset.account);
@@ -1483,6 +1595,11 @@ elements.durationInput.addEventListener("keydown", (event) => {
 });
 elements.markDoneButton.addEventListener("click", () => updateSelectedTime(true));
 elements.labAssistantForm.addEventListener("submit", assignLabAssistant);
+elements.removeAccountForm.addEventListener("submit", removeAccount);
+elements.cancelRemoveAccountButton.addEventListener("click", () => elements.removeAccountDialog.close());
+elements.removeAccountDialog.addEventListener("cancel", (event) => {
+  if (accountRemoving) event.preventDefault();
+});
 elements.clockTowerForm.addEventListener("submit", activateClockTower);
 elements.closeClockTowerDialog.addEventListener("click", () => elements.clockTowerDialog.close());
 elements.closeLabAssistantDialog.addEventListener("click", () => elements.labAssistantDialog.close());
@@ -1533,6 +1650,7 @@ async function initialize() {
     try {
       accountOrder = await loadAccountOrder();
     } catch (error) {
+      accountOrderReady = false;
       setAccountOrderStatus(`Could not load account order: ${error.message}`, true);
     }
     try {
@@ -1558,16 +1676,21 @@ async function initialize() {
   try {
     let remoteBuilders = await fetchSupabaseBuilders();
     if (!remoteBuilders.length && builders.length) {
-      const localAssistants = loadLocalAssistants();
-      const localClocks = loadLocalClocks();
-      if ([...localClocks.values()].some((boost) => boost.availableAt > Date.now())) {
-        throw new Error("Wait for the local Clock Tower cooldown to finish before migrating to an empty Supabase table.");
+      const { data: importState, error: importStateError } = await supabase.from("account_order")
+        .select("local_import_disabled").eq("id", 1).maybeSingle();
+      if (importStateError) throw importStateError;
+      if (!importState?.local_import_disabled) {
+        const localAssistants = loadLocalAssistants();
+        const localClocks = loadLocalClocks();
+        if ([...localClocks.values()].some((boost) => boost.availableAt > Date.now())) {
+          throw new Error("Wait for the local Clock Tower cooldown to finish before migrating to an empty Supabase table.");
+        }
+        if ([...localAssistants.values()].some((assistant) => assistant.timerId && assistant.projectedFinish > Date.now())) {
+          throw new Error("Stop active local helper tracking before migrating timers to Supabase.");
+        }
+        await upsertSupabaseBuilders(builders);
+        remoteBuilders = await fetchSupabaseBuilders();
       }
-      if ([...localAssistants.values()].some((assistant) => assistant.timerId && assistant.projectedFinish > Date.now())) {
-        throw new Error("Stop active local helper tracking before migrating timers to Supabase.");
-      }
-      await upsertSupabaseBuilders(builders);
-      remoteBuilders = await fetchSupabaseBuilders();
     }
     builders = remoteBuilders;
     remoteReady = true;

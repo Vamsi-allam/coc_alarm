@@ -217,6 +217,25 @@
       </footer>
     </main>
 
+    <dialog class="webhook-dialog" id="removeAccountDialog" aria-labelledby="removeAccountDialogTitle">
+      <div class="webhook-dialog-heading">
+        <div>
+          <p class="eyebrow">ACCOUNT MANAGEMENT</p>
+          <h2 id="removeAccountDialogTitle">Remove account</h2>
+        </div>
+      </div>
+      <p class="webhook-dialog-copy" id="removeAccountTarget"></p>
+      <p class="assistant-help">This permanently deletes all this account's Home and Night Village timers, Lab Assistant, Builder's Apprentice, Clock Tower boosts and cooldowns, Discord destination, alert history, and saved ordering. Other accounts are not affected.</p>
+      <p class="assistant-help">This cannot be undone. It only removes data from Builder Desk, not your Clash of Clans account.</p>
+      <form id="removeAccountForm" novalidate>
+        <div class="webhook-actions">
+          <button class="button button-outline" id="cancelRemoveAccountButton" type="button" autofocus>Cancel</button>
+          <button class="remove-button" id="confirmRemoveAccountButton" type="submit">Permanently remove account</button>
+        </div>
+        <p class="editor-status" id="removeAccountStatus" aria-live="polite"></p>
+      </form>
+    </dialog>
+
     <dialog class="webhook-dialog" id="clockTowerDialog" aria-labelledby="clockTowerDialogTitle">
       <div class="webhook-dialog-heading">
         <div>

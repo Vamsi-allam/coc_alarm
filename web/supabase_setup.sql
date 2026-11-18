@@ -472,6 +472,9 @@ create table if not exists public.account_order (
   accounts text[] not null default '{}'
 );
 
+alter table public.account_order
+  add column if not exists local_import_disabled boolean not null default false;
+
 alter table public.account_order enable row level security;
 grant select, insert, update on public.account_order to anon;
 
@@ -652,3 +655,37 @@ as $$
 $$;
 revoke all on function public.claim_due_clock_tower_alerts(integer) from public, anon, authenticated;
 grant execute on function public.claim_due_clock_tower_alerts(integer) to service_role;
+
+create or replace function public.remove_builder_account(p_account text)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  key_value text := lower(btrim(p_account));
+begin
+  if key_value is null or key_value = '' then
+    raise exception 'Choose an account to remove.';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(key_value, 0));
+  perform pg_advisory_xact_lock(hashtextextended(key_value, 22));
+  -- Remove helper reservations first so active timers can be deleted normally.
+  delete from public.lab_assistants where lower(btrim(account_key)) = key_value;
+  delete from public.clock_tower_alerts where lower(btrim(account)) = key_value;
+  delete from public.clock_towers where lower(btrim(account_key)) = key_value;
+  delete from public.builder_timers where lower(btrim(account)) = key_value;
+  delete from public.discord_webhooks where lower(btrim(account)) = key_value;
+  -- An intentionally empty cloud must not be repopulated by another browser's old cache.
+  insert into public.account_order (id, accounts, local_import_disabled)
+    values (1, '{}', true)
+    on conflict (id) do update set
+      accounts = array(
+        select entry from unnest(public.account_order.accounts) with ordinality as entries(entry, position)
+        where lower(btrim(entry)) <> key_value order by position
+      ),
+      local_import_disabled = true;
+end;
+$$;
+revoke all on function public.remove_builder_account(text) from public, anon, authenticated;
+grant execute on function public.remove_builder_account(text) to anon;

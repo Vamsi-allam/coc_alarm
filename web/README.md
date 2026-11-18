@@ -10,6 +10,8 @@ The **Account timers** summary shows each account's Home and Night Village timer
 
 Use the arrows on account cards to change their order. The order also applies to the builder list and account dropdowns. With Supabase configured, the shared order is saved there; reload the app on another device to see changes. In local mode, it is saved only in that browser.
 
+Use **Remove account** on an account card and confirm **Permanently remove account** to delete its timers in both villages, both Home Village helpers and their assignments, Clock Tower state and cooldown, Discord destination, alert history (including pending alerts), and its saved order entry. Active assignments do not need to be stopped first. This cannot be undone and does not delete your actual Clash of Clans account. Other accounts are unchanged. In Supabase mode the deletion is one database transaction; in local mode it removes this browser's saved data. Reload other devices after deleting; Discord deliveries already in flight may still arrive.
+
 For a running **Home Village Lab** timer, select **Assign assistant** on its row when the account's assistant is available. In the pop-up, choose its level and optionally **Keep assigned until upgrade is complete**, then confirm after assigning it in the game. Each account has one assistant; while an assignment is tracked, another Lab timer on that account cannot use it. The time saved appears above the remaining time on the assigned timer. The countdown applies the assistant's bonus gradually as it works; the estimated finish includes its expected future work. The assistant works for up to one hour at its level's bonus rate, and the shared helper workday lasts 23 hours. If another helper already started the workday outside the tracker, enter its remaining time in the pop-up; leave it blank to reuse the tracked workday or start a new one. Future work is forecast in advance, so the estimated finish time and Discord alert still work with the browser closed.
 
 The **Builder's Apprentice** works the same way, but only on regular **Home Village Builder** rows, at levels **1-8**. Select **Assign apprentice** to choose its level and repeat option. Each account has one Apprentice, separate from its Lab Assistant, so both can work at the same time but the Apprentice cannot be assigned to two builders. It cannot be assigned to Night Village, Lab, or Pet House rows. Both helpers share the tracked 23-hour workday: the second helper reuses the active workday automatically. The optional workday input is used only when no active workday is already tracked.
@@ -29,7 +31,7 @@ In-progress builder rows have a steady amber background without blinking. Ready 
 3. Copy `.env.example` to `.env.local` and set the project URL and publishable/anon key.
 4. Run `npm install`, then `npm run dev` from this directory.
 
-The app has no sign-in. Its anon key is intentionally used in the browser, and the SQL policies allow public read/write access to timer rows and the shared account order, as well as reading and assigning Lab Assistants through database functions. Anyone with the deployed site can view, add, change, or delete timers, change the account order, assign or stop Lab Assistants, and could trigger alerts by changing timers. Store only non-sensitive data; consider access control before publishing. The `discord_webhooks` table has no anon policies or grants; only the Edge Function's server-side secret can read it. Never put a Supabase secret/service-role key or a Discord webhook URL in browser code or a `VITE_` variable.
+The app has no sign-in. Its anon key is intentionally used in the browser, and the SQL policies allow public read/write access to timer rows and the shared account order, as well as reading and assigning Lab Assistants through database functions. Anyone with the deployed site can view, add, change, or delete timers, remove entire accounts (including their saved Discord destinations), change the account order, assign or stop Lab Assistants, and could trigger alerts by changing timers. Store only non-sensitive data; consider access control before publishing. The `discord_webhooks` table has no anon policies or grants; only the Edge Function's server-side secret can read it. Never put a Supabase secret/service-role key or a Discord webhook URL in browser code or a `VITE_` variable.
 
 ## Configure Discord alerts
 
@@ -54,7 +56,9 @@ For the Clock Tower update, run the updated `supabase_setup.sql` **first**, then
 
 ## Data migration
 
-If the Supabase timer table is empty when the app launches, existing browser-local timers are copied there. You can also use **Import CSV**. CSV files are read in the browser and are not uploaded as files.
+If the Supabase timer table is empty when the app launches, existing browser-local timers are copied there, unless an account has been explicitly removed using **Remove account**. Account removal sets `account_order.local_import_disabled` so stale browser caches cannot automatically recreate deleted accounts when the cloud becomes empty. You can still add accounts normally or deliberately use **Import CSV**. CSV files are read in the browser and are not uploaded as files.
+
+To enable account removal on an existing installation, run the updated `supabase_setup.sql` first, redeploy the frontend, and reload open tabs. No Edge Function redeployment or schedule change is needed for this update.
 
 ## Deploy to Vercel
 
